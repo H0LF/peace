@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:16  # the runner's pg_dump is 16: the backup tests need a matching server
         env:
           POSTGRES_USER: peace
           POSTGRES_HOST_AUTH_METHOD: trust

@@ -21,7 +21,7 @@ function Have($command) { [bool](Get-Command $command -ErrorAction SilentlyConti
 function Update-SessionPath {
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
 }
-function Write-Lines($path, $lines) { [IO.File]::WriteAllLines($path, [string[]]$lines, $NoBom) }
+function Write-TextFile($path, $lines) { [IO.File]::WriteAllLines($path, [string[]]$lines, $NoBom) }
 function New-Secret {
     $bytes = New-Object byte[] 32
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -129,12 +129,12 @@ Remove-Item -Recurse -Force $unpacked, $zip
 
 $EnvFile = Join-Path $Secrets 'peace.env'
 $DbPassword = Join-Path $Secrets 'db_password'
-if (-not (Test-Path $DbPassword)) { Write-Lines $DbPassword @(New-Secret) }
+if (-not (Test-Path $DbPassword)) { Write-TextFile $DbPassword @(New-Secret) }
 if (-not (Test-Path $EnvFile) -or -not (Select-String -Path $EnvFile -Pattern '^PEACE_API_TOKEN=' -Quiet)) {
-    Write-Lines $EnvFile @("PEACE_API_TOKEN=$(New-Secret)")
+    Write-TextFile $EnvFile @("PEACE_API_TOKEN=$(New-Secret)")
 }
 $Token = ((Get-Content $EnvFile | Where-Object { $_ -like 'PEACE_API_TOKEN=*' }) -split '=', 2)[1]
-Write-Lines (Join-Path $App '.env') @("PEACE_ENV_FILE=$EnvFile", "PEACE_DB_PASSWORD_FILE=$DbPassword", "PEACE_STT_MODEL=$Stt")
+Write-TextFile (Join-Path $App '.env') @("PEACE_ENV_FILE=$EnvFile", "PEACE_DB_PASSWORD_FILE=$DbPassword", "PEACE_STT_MODEL=$Stt")
 
 Say 'A preparar os serviços da PEACE no Docker (na primeira vez demora alguns minutos)…'
 Push-Location $App
@@ -163,7 +163,7 @@ if (-not (Test-Path (Join-Path $Venv 'Scripts\pythonw.exe'))) { & $Uv venv $Venv
 if ($LASTEXITCODE -ne 0) { Fail 'Não foi possível instalar o agente do PC (Python).' }
 $DesktopEnv = Join-Path $PeaceHome 'desktop.env'
 if (-not (Test-Path $DesktopEnv)) {
-    Write-Lines $DesktopEnv @('PEACE_URL=http://127.0.0.1:8420', "PEACE_TOKEN=$Token", 'PEACE_PTT=SUPER + Y',
+    Write-TextFile $DesktopEnv @('PEACE_URL=http://127.0.0.1:8420', "PEACE_TOKEN=$Token", 'PEACE_PTT=SUPER + Y',
                                'PEACE_TTS=supertonic3', 'PEACE_TTS_VOICE=F1')
 }
 $Startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'PEACE.lnk'
