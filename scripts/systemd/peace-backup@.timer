@@ -1,0 +1,11 @@
+# Daily after the 02:00 sync; a missed run (machine off) runs at next boot.
+[Unit]
+Description=Daily PEACE backup (%i)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Lisbon
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

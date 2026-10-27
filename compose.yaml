@@ -1,0 +1,63 @@
+name: peace
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: peace
+      POSTGRES_DB: peace
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "peace", "-d", "peace"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api: &app
+    build: .
+    restart: unless-stopped
+    env_file: ${PEACE_ENV_FILE:-secrets/peace.env}
+    environment:
+      PEACE_DB_PASSWORD_FILE: /run/secrets/db_password
+      PEACE_DB_HOST: db
+      PEACE_DATA_DIR: /data
+      PEACE_LLM_URL: http://host.docker.internal:11434  # Ollama on this computer, if installed (optional)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets: [db_password]
+    volumes:
+      - peacedata:/data  # course files and the Graphify export, shared by api and worker
+    depends_on:
+      db:
+        condition: service_healthy
+    # Loopback only: never a public port.
+    ports:
+      - "127.0.0.1:8420:8420"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8420/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Daily sync at 02:00 Europe/Lisbon. Starts after the API, which applies migrations.
+  worker:
+    <<: *app
+    command: ["peace-worker"]
+    ports: []
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+
+secrets:
+  db_password:
+    file: ${PEACE_DB_PASSWORD_FILE:-secrets/db_password}
+
+volumes:
+  pgdata:
+  peacedata:

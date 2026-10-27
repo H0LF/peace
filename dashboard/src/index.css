@@ -1,0 +1,317 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource/rajdhani/500.css";
+@import "@fontsource/rajdhani/600.css";
+@import "@fontsource/rajdhani/700.css";
+
+/* Semantic tokens: components use these names, themes swap the values.
+   Dark is the "hologram" theme: amber light on near-black, holographic cyan for exams. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0a09; /* charcoal, never pure black */
+  --surface: #12100d;
+  --surface-2: #1a1712;
+  --surface-3: #231e16;
+  --line: #2b2316;
+  --line-strong: #463720;
+  --text: #f7eedd;
+  --muted: #bfae8e;
+  --faint: #8d7d62;
+  --accent: #ffb547;
+  --accent-soft: rgb(255 181 71 / 0.12);
+  --accent-ink: #140d02;
+  --glow: rgb(255 181 71 / 0.35);
+  /* Hologram tones (orb, graph, HUD); lib/theme.ts derives them from the user's accent. */
+  --holo: #ffb547;
+  --holo-pale: #ffe08a;
+  --holo-dim: #a5762e;
+  --danger: #ff6b6b;
+  --danger-soft: rgb(255 107 107 / 0.13);
+  --warn: #ff8f5a;
+  --warn-soft: rgb(255 143 90 / 0.13);
+  --ok: #8fe3a5;
+  --ok-soft: rgb(143 227 165 / 0.12);
+  --exam: #6fd3ff;
+  --exam-soft: rgb(111 211 255 / 0.12);
+  --scene-bg: #090b0d;
+  --graph-concept: #fff3d6;
+  --graph-task: #ff7a45;
+  --graph-exam: #6fd3ff;
+  --graph-inferred: #7cc6e8;
+  --glass: rgb(18 16 13 / 0.76);
+  --shadow: 0 10px 35px rgb(0 0 0 / 0.14);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e7eaef;
+  --line: #e2e5ea;
+  --line-strong: #cfd4dc;
+  --text: #14171c;
+  --muted: #586070;
+  --faint: #697181;
+  --accent: #a8650a;
+  --accent-soft: rgb(168 101 10 / 0.1);
+  --accent-ink: #ffffff;
+  --danger: #c93a3a;
+  --danger-soft: rgb(201 58 58 / 0.1);
+  --warn: #a76b00;
+  --warn-soft: rgb(167 107 0 / 0.1);
+  --ok: #18865a;
+  --ok-soft: rgb(24 134 90 / 0.1);
+  --exam: #7246d9;
+  --exam-soft: rgb(114 70 217 / 0.1);
+  --glow: transparent;
+  --holo: #a8650a;
+  --holo-pale: #b77e3b;
+  --holo-dim: #865108;
+  --scene-bg: #f5f5f7;
+  --graph-concept: #715b3b;
+  --graph-task: #bd4820;
+  --graph-exam: #386aa0;
+  --graph-inferred: #56829a;
+  --glass: rgb(255 255 255 / 0.78);
+  --shadow: 0 8px 28px rgb(30 40 55 / 0.07);
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Rajdhani", "Inter Variable", ui-sans-serif, sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-exam: var(--exam);
+  --color-exam-soft: var(--exam-soft);
+}
+
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--text);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply min-h-dvh font-sans text-sm leading-relaxed;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  /* A bare `grid` gets one shrinkable column, so long nowrap text truncates instead of
+     widening the page on phones. Explicit grid-cols-* utilities still win (utilities layer). */
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- hologram atmosphere (dark theme only) ---------------------------------------------------- */
+
+[data-theme="dark"] body {
+  background:
+    radial-gradient(1200px 700px at 85% -10%, color-mix(in srgb, var(--holo) 10%, transparent), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, rgb(80 190 255 / 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* Faint drifting grid behind everything. */
+[data-theme="dark"] body::before {
+  content: "";
+  position: fixed;
+  inset: -40px;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--holo) 3.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--holo) 3.5%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at 60% 30%, black 20%, transparent 75%);
+  animation: grid-drift 40s linear infinite;
+}
+
+@keyframes grid-drift {
+  to {
+    transform: translate(40px, 40px);
+  }
+}
+
+/* WebGL holograms share the page theme; the orb always composites transparently. */
+.orb canvas,
+.holo-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+.graph-tip {
+  max-width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--glass);
+  color: var(--text);
+  font: 500 12px/1.4 "Inter Variable", sans-serif;
+}
+
+/* Cockpit: volumetric light behind the orb and a pool of light on the floor. */
+.cockpit::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 34% 46% at 52% 42%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 72%),
+    radial-gradient(ellipse 40% 14% at 52% 80%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
+}
+.orb-hero {
+  mask-image: linear-gradient(to bottom, black 80%, transparent);
+}
+.state-arc {
+  transform-origin: 50% 50%;
+  transform: rotate(-90deg);
+}
+.state-dial.is-active .state-arc {
+  animation: dial-spin 1.4s linear infinite;
+}
+@keyframes dial-spin {
+  from {
+    transform: rotate(-90deg);
+  }
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+/* Frosted glass panel (cockpit). */
+@utility glass {
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--line));
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.035), rgb(255 255 255 / 0.008)),
+    var(--glass);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.rail-active {
+  box-shadow: 0 0 22px -8px var(--glow);
+}
+
+/* HUD corner brackets on panels. */
+@utility hud {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    pointer-events: none;
+    /* The panel's own rounded border, shown only near two corners: straight lines can't follow the curve. */
+    border: 1px solid color-mix(in srgb, var(--holo) 55%, transparent);
+    mask:
+      linear-gradient(#000 0 0) top left / 32px 32px no-repeat,
+      linear-gradient(#000 0 0) bottom right / 32px 32px no-repeat;
+    opacity: var(--hud-opacity, 0);
+  }
+}
+
+[data-theme="dark"] {
+  --hud-opacity: 1;
+}
+
+@utility glow {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--holo) 18%, transparent),
+    0 0 32px -8px var(--glow);
+}
+
+/* A slow beam of light sweeping across a panel's top edge. */
+@utility sweep {
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 1px;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: var(--hud-opacity, 0);
+    animation: sweep 6s ease-in-out infinite;
+  }
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes holo-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(1.6);
+  }
+}
+
+@utility animate-holo-pulse {
+  animation: holo-pulse 2.4s ease-in-out infinite;
+}
+
+[data-theme="dark"] h1 {
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
+}
+.font-display {
+  font-family: var(--font-display);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@utility animate-rise {
+  animation: rise 220ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}

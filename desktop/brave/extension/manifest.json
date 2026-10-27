@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "PEACE — separadores",
+  "version": "1.0.0",
+  "description": "Deixa a PEACE (no teu PC) listar, abrir, agrupar e fechar separadores quando lhe pedes.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "tabGroups", "nativeMessaging"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyRu99Olr5O0FDLAibsAXJYtb9+XBaBOwi0KPk9MHgkCASXujNOA0Y0OUH1kwR+PY8CH8DXJhWn5Zj0EBsJYglef242kIZgXAdYbLTsMCeF9SA5JxFF8lIeJGEzOifqX1jY+X6hlyQ4+45oYaQyhVxLXAfvXatObj256oQDBufqTiRaIVfdxSVYlVw7s5rQMFQJlJ/IWyby/ukTL6hd3BlEQqfUInh0Z9yPlL48lVRHhcRlFnvgclxmGXUi0eJM1Nf7qe2fpkOJsnreAbBi2npSwFSPWXPh3sSGDm02nF3x6V0VcTxn1+u3/UUGh9siU+zx44IjUBF2CTHcmX7g0JqQIDAQAB"
+}

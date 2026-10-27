@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PEACE
+GenericName=Secretária pessoal
+Comment=Prazos, aulas, plano de estudo e notas
+Exec=brave --app=http://127.0.0.1:8420/
+Icon=peace
+Terminal=false
+Categories=Office;

@@ -1,0 +1,15 @@
+[Unit]
+Description=PEACE desktop agent (notifications, vault copies, push-to-talk)
+PartOf=graphical-session.target
+After=graphical-session.target peace-api.service
+
+[Service]
+EnvironmentFile=%h/.config/peace/desktop.env
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/usr/bin/python3 %h/peace/desktop/peace_desktop.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

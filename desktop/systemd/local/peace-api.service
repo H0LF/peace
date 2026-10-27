@@ -1,0 +1,24 @@
+# Local mode: the API and dashboard on 127.0.0.1:8420, from this repository's virtualenv.
+# Migrations run before start; the unit is "active" only once /health answers, so the worker starts after it.
+[Unit]
+Description=PEACE API and dashboard (local)
+Requires=peace-db.service
+After=peace-db.service network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/peace/peace.env
+Environment=PEACE_DATABASE_URL=postgresql+psycopg://peace@/peace?host=%t/peace-pg
+Environment=PEACE_HOST=127.0.0.1
+Environment=PEACE_PORT=8420
+Environment=PEACE_DATA_DIR=%h/.local/share/peace/data
+Environment=PEACE_LLM_URL=http://127.0.0.1:11434
+WorkingDirectory=%h/peace
+ExecStartPre=%h/peace/.venv/bin/alembic upgrade head
+ExecStart=%h/peace/.venv/bin/peace-api
+ExecStartPost=/usr/bin/curl -fsS -o /dev/null --retry 60 --retry-delay 1 --retry-all-errors --max-time 2 http://127.0.0.1:8420/health
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

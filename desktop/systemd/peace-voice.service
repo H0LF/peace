@@ -1,0 +1,23 @@
+[Unit]
+Description=PEACE local VoiceStudio speech API (headless)
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+ConditionPathExists=%h/.config/VoiceStudio/runtime/project/.venv/bin/python
+
+[Service]
+WorkingDirectory=%h/.config/VoiceStudio/runtime/project/backend
+Environment=OMNIVOICE_BIND_HOST=127.0.0.1
+Environment=OMNIVOICE_PORT=3900
+Environment=OMNIVOICE_DESKTOP_CONTAINED=0
+# Whisper medium: ~3x faster than large-v3 on this CPU-only engine, still good for pt-PT commands.
+Environment=ASR_MODEL_FASTER=Systran/faster-whisper-medium
+ExecStart=%h/.config/VoiceStudio/runtime/project/.venv/bin/python %h/.config/VoiceStudio/runtime/project/backend/main.py
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

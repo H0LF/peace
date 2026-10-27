@@ -1,0 +1,22 @@
+# Local mode: the daily 02:00 Europe/Lisbon sync. The schedule is in the database, so a sync missed
+# while the PC was off runs once after boot (with lingering enabled, without logging in).
+[Unit]
+Description=PEACE sync worker (local)
+Requires=peace-db.service
+After=peace-db.service peace-api.service network-online.target
+Wants=peace-api.service network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/peace/peace.env
+Environment=PEACE_DATABASE_URL=postgresql+psycopg://peace@/peace?host=%t/peace-pg
+Environment=PEACE_DATA_DIR=%h/.local/share/peace/data
+Environment=PEACE_LLM_URL=http://127.0.0.1:11434
+WorkingDirectory=%h/peace
+ExecStart=%h/peace/.venv/bin/peace-worker
+# The worker exits on SIGTERM after its current tick; a sync in progress is marked interrupted on next start.
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

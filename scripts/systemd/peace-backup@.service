@@ -1,0 +1,11 @@
+# Not installed by desktop/install.sh. Enable only after the deployment architecture is approved (docs/operations/BACKUP.md).
+# Instances: peace-backup@db (where the database runs), peace-backup@vault (on the desktop).
+[Unit]
+Description=PEACE backup (%i)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/peace/backup.env
+ExecStart=%h/peace/scripts/backup.sh %i
+Nice=10
+IOSchedulingClass=idle

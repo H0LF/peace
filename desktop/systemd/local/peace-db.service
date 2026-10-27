@@ -1,0 +1,21 @@
+# Local mode: PEACE's own PostgreSQL cluster, run as this user, reachable only through a Unix socket in
+# $XDG_RUNTIME_DIR (no TCP port, no password: peer authentication). Created by desktop/install-local.sh.
+[Unit]
+Description=PEACE database (PostgreSQL, this user, Unix socket only)
+
+[Service]
+Type=notify
+Environment=PGDATA=%h/.local/share/peace/postgres
+RuntimeDirectory=peace-pg
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/postgres -D ${PGDATA} -k %t/peace-pg -c listen_addresses=
+ExecReload=/bin/kill -HUP $MAINPID
+# SIGINT = PostgreSQL's "fast" shutdown: open transactions roll back, data is flushed.
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

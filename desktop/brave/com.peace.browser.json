@@ -1,0 +1,7 @@
+{
+  "name": "com.peace.browser",
+  "description": "PEACE tab bridge (relays the desktop agent's tab requests to the PEACE extension)",
+  "path": "@HOST_PATH@",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://lbchhbjeompimhfnpeeeklfigbimnbnm/"]
+}

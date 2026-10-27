@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pt-PT" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#050608" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>PEACE</title>
+    <script>
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem('peace-theme') || 'dark'
+        var accent = localStorage.getItem('peace-accent-css')
+        if (accent) {
+          var tag = document.createElement('style')
+          tag.id = 'peace-accent'
+          tag.textContent = accent
+          document.head.appendChild(tag)
+        }
+      } catch {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-D1TEmDGt.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-B1Ja-bHY.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
