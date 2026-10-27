@@ -57,8 +57,9 @@ jobs:
       - name: PostgreSQL for the test suite (preinstalled, stopped)
         shell: pwsh
         run: |
-          Set-Service postgresql-x64-* -StartupType Manual
-          Start-Service postgresql-x64-*
+          $service = Get-Service -Name 'postgresql*' | Select-Object -First 1  # Set-Service takes no wildcards
+          Set-Service -Name $service.Name -StartupType Manual
+          Start-Service -Name $service.Name
           & "$env:PGBIN\psql.exe" -U postgres -c "CREATE ROLE peace LOGIN SUPERUSER PASSWORD 'peace'" -c "CREATE DATABASE peace_test OWNER peace"
         env:
           PGPASSWORD: root
