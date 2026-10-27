@@ -24,6 +24,12 @@ CODE_AT_END = re.compile(r"\((\d{5,})\)\s*$")
 KINDS = {"aulas": "class", "avaliacoes": "exam"}
 
 
+def configure(base: str) -> None:
+    """Use the Nonio address from Settings. shortcut: module-wide, fine with one student per PEACE."""
+    global BASE
+    BASE = base.rstrip("/")
+
+
 @dataclass
 class Snapshot:
     courses: list[dict[str, Any]]

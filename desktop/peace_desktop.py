@@ -9,7 +9,10 @@ server is unreachable it keeps retrying; whatever was due meanwhile is still pen
 appears on reconnect (expired reminders are dropped there).
 """
 
-import fcntl
+try:
+    import fcntl  # Linux keyboards; Windows reads keys in peace_windows.py
+except ImportError:
+    fcntl = None
 import hashlib
 import html
 import json
@@ -303,7 +306,7 @@ def report_notification_delivery(**values) -> None:
 
 VOICESTUDIO = os.environ.get("PEACE_VOICESTUDIO", "http://127.0.0.1:3900").rstrip("/")
 OLLAMA = os.environ.get("PEACE_OLLAMA", "http://127.0.0.1:11434").rstrip("/")
-LLM_MODEL = os.environ.get("PEACE_LLM_MODEL", "gpt-oss:20b")  # the server's model: already loaded, no reload
+LLM_MODEL = os.environ.get("PEACE_LLM_MODEL", "gpt-oss:20b")  # until the server says which model it uses
 PTT = os.environ.get("PEACE_PTT", "SUPER + Y")  # Hyprland key combo, as written in hyprland.lua
 TTS = os.environ.get("PEACE_TTS", "off")  # a VoiceStudio speech engine id (supertonic3), or "off": notifications
 TTS_VOICE = os.environ.get("PEACE_TTS_VOICE", "F1")  # Supertonic's F1..F5
@@ -311,7 +314,7 @@ VOICES = {"supertonic3": [f"F{i}" for i in range(1, 6)]}  # per engine, for the 
 PTT_RE = re.compile(r"^(SUPER|ALT|CTRL|SHIFT)( \+ (SUPER|ALT|CTRL|SHIFT))* \+ [A-Z0-9]$")  # it ends up in Lua code
 # Live voice settings: env values until the server's Settings say otherwise (applied on every heartbeat).
 DEVICE_RE = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9_.:@/-]{0,199})?$")
-settings = {"ptt": PTT, "speak": TTS != "off", "voice": TTS_VOICE, "language": "en",
+settings = {"ptt": PTT, "speak": TTS != "off", "voice": TTS_VOICE, "language": "en", "model": LLM_MODEL,
             "input_device": os.environ.get("PEACE_INPUT_DEVICE", ""), "output_device": os.environ.get("PEACE_OUTPUT_DEVICE", "")}
 # Private per-user directory only; never a guessable path in /tmp (voice is off without it).
 RUNTIME = Path(os.environ["XDG_RUNTIME_DIR"]) if os.environ.get("XDG_RUNTIME_DIR") else None
@@ -491,7 +494,7 @@ def keys_held(combo: str) -> bool | None:
 
 def warm_model() -> None:
     """Load the model while the user speaks: Ollama unloads it after 10 idle minutes and loading takes ~11 s."""
-    body = {"model": LLM_MODEL, "keep_alive": "10m", "options": {"num_ctx": 8192}}  # the server's num_ctx, or it reloads
+    body = {"model": settings["model"], "keep_alive": "10m", "options": {"num_ctx": 8192}}  # the server's num_ctx, or it reloads
     request = urllib.request.Request(OLLAMA + "/api/generate", method="POST", headers={"Content-Type": "application/json"},
                                      data=json.dumps(body).encode())
     try:
@@ -503,7 +506,7 @@ def warm_model() -> None:
 
 def to_english(text: str) -> str | None:
     """PEACE's replies are Portuguese; the speech engine sounds far better in English. None: speak Portuguese."""
-    body = {"model": LLM_MODEL, "stream": False, "think": "low", "keep_alive": "10m",
+    body = {"model": settings["model"], "stream": False, "think": "low", "keep_alive": "10m",
             "options": {"temperature": 0, "num_ctx": 8192},  # the server's num_ctx: a different one reloads the model
             "messages": [{"role": "system", "content": "Translate the user message from European Portuguese into natural "
                                                       "spoken English. Reply with the translation only."},
@@ -529,16 +532,18 @@ def speak(text: str, voice_name: str | None = None, output_device: str | None = 
         with urllib.request.urlopen(request, timeout=120) as r:
             audio.write_bytes(r.read())
         voice_diagnostics["latency"]["tts_ms"] = round((time.monotonic() - started) * 1000)
-        args = ["pw-play"]
-        selected = settings["output_device"] if output_device is None else output_device
-        if selected:
-            args += ["--target", selected]
         set_state("speaking")  # synthesis can take seconds; speaking means playback really starts
         started = time.monotonic()
-        subprocess.run(args + [str(audio)], check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        play(audio, settings["output_device"] if output_device is None else output_device)
         voice_diagnostics["latency"]["playback_ms"] = round((time.monotonic() - started) * 1000)
     finally:
         audio.unlink(missing_ok=True)
+
+
+def play(audio: Path, device: str) -> None:
+    """Play a WAV file to the end on the chosen output ("" = the default one)."""
+    args = ["pw-play"] + (["--target", device] if device else [])
+    subprocess.run(args + [str(audio)], check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def notify_reply(heard: str, reply: str) -> None:
@@ -606,8 +611,7 @@ class Voice:
             # Record first: the state update goes over the network and must not clip the first words.
             try:
                 RECORDING.unlink(missing_ok=True)
-                self.recorder = subprocess.Popen(record_command(RECORDING),
-                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.recorder = self.open_recorder()
             except OSError:
                 voice_diagnostics["error"] = "Não foi possível iniciar a captura. Verifica PipeWire e o microfone selecionado."
                 notify_reply("Voz indisponível", voice_diagnostics["error"])
@@ -619,6 +623,21 @@ class Voice:
         threading.Thread(target=self.watch_release, args=(started,), daemon=True).start()
         threading.Thread(target=warm_model, daemon=True).start()
         threading.Timer(MAX_SECONDS, lambda: self.started == started and self.stop()).start()
+
+    def open_recorder(self):
+        return subprocess.Popen(record_command(RECORDING), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def close_recorder(self, proc) -> None:
+        """Stop recording; RECORDING then holds the complete WAV."""
+        try:
+            proc.send_signal(signal.SIGINT)  # pw-record finishes the WAV header on SIGINT
+        except ProcessLookupError:
+            pass  # exited between the monitor's poll and this release
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     def watch_release(self, started: float) -> None:
         """Hyprland misses the key release when SUPER goes up first; the keyboard itself never does."""
@@ -656,15 +675,7 @@ class Voice:
             proc, self.recorder = self.recorder, None
             if not proc:
                 return
-            try:
-                proc.send_signal(signal.SIGINT)  # pw-record finishes the WAV header on SIGINT
-            except ProcessLookupError:
-                pass  # exited between the monitor's poll and this release
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            self.close_recorder(proc)
             held = time.monotonic() - self.started
             self.busy = True  # stays reserved until cleanup and idle publication finish
         log.info("push-to-talk: key up after %.1f s, microphone closed", held)
@@ -676,7 +687,7 @@ class Voice:
                 self.busy = False
             return
         if not has_audio(RECORDING):
-            log.warning("push-to-talk: no usable audio (pw-record exit %s)", proc.returncode)
+            log.warning("push-to-talk: no usable audio (recorder exit %s)", getattr(proc, "returncode", None))
             RECORDING.unlink(missing_ok=True)
             with self.lock:
                 set_state("idle")
@@ -940,6 +951,8 @@ def main() -> None:
                 next_beat = time.monotonic() + POLL_SECONDS
                 try:  # voice must never stop notifications
                     apply_voice_settings(call("GET", "/api/v1/preferences/voice") or {})
+                    # The server's model, so translation and warm-up never load a second one.
+                    settings["model"] = (call("GET", "/api/v1/assistant/models") or {}).get("using") or settings["model"]
                     call("POST", "/api/v1/desktop/heartbeat", {"capabilities": capabilities()})
                 except (urllib.error.URLError, OSError, ValueError) as e:
                     log.warning("voice settings/heartbeat failed: %s", e)

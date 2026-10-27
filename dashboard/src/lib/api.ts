@@ -242,10 +242,17 @@ export interface AssistantStatus {
 }
 export interface SourceLogin {
   enabled: boolean
+  url: string
   username: string
   has_password: boolean
 }
 export type Integrations = Record<'inforestudante' | 'moodle', SourceLogin>
+export interface Models {
+  installed: string[]
+  using: string | null
+  chosen: string
+  preferred: string[]
+}
 export interface VoicePrefs {
   ptt: string
   speak: boolean
@@ -408,8 +415,10 @@ export const api = {
   planner: () => request<PlanPrefs>('/api/v1/preferences/planner'),
   savePlanner: (p: PlanPrefs) => request<PlanPrefs>('/api/v1/preferences/planner', { method: 'PUT', ...body(p) }),
   integrations: () => request<Integrations>('/api/v1/preferences/integrations'),
-  saveIntegrations: (p: Record<keyof Integrations, { enabled: boolean; username: string; password: string }>) =>
+  saveIntegrations: (p: Record<keyof Integrations, { enabled: boolean; url: string; username: string; password: string }>) =>
     request<Integrations>('/api/v1/preferences/integrations', { method: 'PUT', ...body(p) }),
+  models: () => request<Models>('/api/v1/assistant/models'),
+  chooseModel: (model: string) => request<void>('/api/v1/preferences/assistant', { method: 'PUT', ...body({ model }) }),
   voicePrefs: () => request<VoicePrefs>('/api/v1/preferences/voice'),
   saveVoicePrefs: (p: VoicePrefs) => request<VoicePrefs>('/api/v1/preferences/voice', { method: 'PUT', ...body(p) }),
   voiceTest: (action: 'meter' | 'stt' | 'tts', settings: VoicePrefs) => request<VoiceTest>('/api/v1/voice/test', { method: 'POST', ...body({ action, settings }) }),

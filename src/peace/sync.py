@@ -54,14 +54,27 @@ def is_running(source: str) -> bool:
         return True
 
 
+# Students paste whatever page they have open; keep the site's base address.
+MOODLE_PAGES = re.compile(r"/(?:login|my|course|mod|user|admin|webservice|calendar|grade|message)(?:/.*)?$|/index\.php.*$")
+
+
+def site_address(source: str, url: str) -> str:
+    """"…/moodle/login/index.php" -> "…/moodle"; "…/nonio/security/login.do" -> "…/nonio"."""
+    url = url.strip().split("?")[0].split("#")[0].rstrip("/")
+    if source == "inforestudante" and "/nonio" in url:
+        return url[: url.index("/nonio") + len("/nonio")]
+    return MOODLE_PAGES.sub("", url).rstrip("/") if source == "moodle" else url
+
+
 def integrations(session: Session) -> dict[str, dict[str, Any]]:
-    """Settings → Integrações, per source: on/off and the login. An empty login falls back to the env file."""
+    """Settings → Integrações, per source: on/off, address and login. Empty fields fall back to the env file."""
     row = session.get(Preference, "integrations")
     saved = row.value if row else {}
     out = {}
     for source in SOURCES:
-        # A source without an address (MOODLE_URL / INFORESTUDANTE_URL) starts switched off.
-        v = {"enabled": bool(SOURCE_MODULES[source].BASE), "username": "", "password": ""} | saved.get(source, {})
+        v = {"url": "", "username": "", "password": ""} | saved.get(source, {})
+        v["url"] = site_address(source, v["url"] or os.environ.get(f"{source.upper()}_URL", ""))
+        v.setdefault("enabled", bool(v["url"]))  # a source without an address starts switched off
         v["username"] = v["username"] or os.environ.get(f"{source.upper()}_USERNAME", "")
         v["password"] = v["password"] or os.environ.get(f"{source.upper()}_PASSWORD", "")
         out[source] = v
@@ -73,10 +86,12 @@ def enabled_sources(session: Session) -> list[str]:
 
 
 def _credentials(source: str) -> tuple[str, str]:
-    if not SOURCE_MODULES[source].BASE:
-        raise AuthError(f"{source.upper()}_URL is not configured")
+    """The login for a source, after pointing its adapter at the address from Settings."""
     with Session(get_engine()) as session:
         login = integrations(session)[source]
+    if not login["url"]:
+        raise AuthError(f"{source} address is not configured")
+    SOURCE_MODULES[source].configure(login["url"])
     if not login["username"] or not login["password"]:
         raise AuthError(f"{source} credentials are not configured")
     return login["username"], login["password"]
@@ -240,12 +255,13 @@ _moodle_token: dict[str, str] = {}  # shortcut: per-process token cache; re-logi
 def open_moodle_file(url: str) -> tuple[httpx.Response, httpx.Client]:
     """Start streaming a Moodle file with the student's token, which never leaves the server.
     The caller closes both the response and the client."""
+    credentials = _credentials("moodle")  # also sets the address that PLUGINFILE is checked against
     if not url.startswith(moodle.PLUGINFILE):
         raise SourceError("not a Moodle file URL")
     client = httpx.Client(timeout=120, follow_redirects=True)
     for retry in (False, True):
         if retry or "token" not in _moodle_token:
-            login = moodle.Moodle(*_credentials("moodle"), http=client)
+            login = moodle.Moodle(*credentials, http=client)
             login.login()
             _moodle_token["token"] = login.token
         response = client.send(client.build_request("GET", url, params={"token": _moodle_token["token"]}), stream=True)

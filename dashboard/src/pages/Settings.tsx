@@ -154,15 +154,20 @@ function VoiceForm() {
   )
 }
 
-/** Which sources PEACE syncs, and their logins. Passwords are write-only: empty keeps the saved one. */
+const EXAMPLE_URL = {
+  moodle: 'O Moodle da tua universidade, ex.: https://moodle.universidade.pt',
+  inforestudante: 'O portal Nónio (inforestudante), ex.: https://inforestudante.universidade.pt/nonio',
+}
+
+/** Which sources PEACE syncs, their addresses and logins. Passwords are write-only: empty keeps the saved one. */
 function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
   const toast = useToast()
   const prefs = useApi(() => api.integrations(), [], 0)
-  type Row = { enabled: boolean; username: string; password: string }
+  type Row = { enabled: boolean; url: string; username: string; password: string }
   const [form, setForm] = useState<Record<keyof Integrations, Row> | null>(null)
   useEffect(() => {
     if (prefs.data && !form) {
-      const row = (s: keyof Integrations) => ({ enabled: prefs.data![s].enabled, username: prefs.data![s].username, password: '' })
+      const row = (s: keyof Integrations) => ({ enabled: prefs.data![s].enabled, url: prefs.data![s].url, username: prefs.data![s].username, password: '' })
       setForm({ inforestudante: row('inforestudante'), moodle: row('moodle') })
     }
   }, [prefs.data, form])
@@ -189,6 +194,9 @@ function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
             <Checkbox checked={form[s].enabled} onChange={(enabled) => set(s, { enabled })} label={`Ligar ${SOURCE_NAME[s]}`} />
             {SOURCE_NAME[s]}
           </label>
+          <Field label="Endereço" hint={EXAMPLE_URL[s]} className="sm:max-w-md">
+            <Input type="url" value={form[s].url} maxLength={300} placeholder="https://" onChange={(e) => set(s, { url: e.target.value.trim() })} />
+          </Field>
           <div className="flex flex-wrap gap-3">
             <Field label="Utilizador" className="sm:w-60">
               <Input value={form[s].username} maxLength={200} autoComplete="off" disabled={!form[s].enabled} onChange={(e) => set(s, { username: e.target.value })} />
@@ -205,6 +213,44 @@ function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
         </Button>
       </div>
     </form>
+  )
+}
+
+/** The local model behind the assistant: automatic (the best installed) or one the student picks. */
+function ModelForm() {
+  const toast = useToast()
+  const models = useApi(() => api.models(), [], 30_000)
+  if (models.error) return <ErrorNote error={models.error} onRetry={models.reload} />
+  if (!models.data) return <Skeleton className="h-16" />
+  const { installed, using, chosen, preferred } = models.data
+  const best = preferred.find((m) => installed.includes(m))
+  async function choose(model: string) {
+    try {
+      await api.chooseModel(model)
+      models.reload()
+      toast('Modelo guardado', 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    }
+  }
+  return (
+    <div className="grid gap-3">
+      <p className="text-[13px] text-muted">
+        {using
+          ? `Em uso: ${using}.`
+          : installed.length
+            ? 'O modelo escolhido não está instalado no Ollama. Escolhe outro ou «Automático».'
+            : 'Sem modelo: o Ollama não está a correr ou não tem modelos. O assistente responde sem modelo (frases fixas).'}
+      </p>
+      <Field label="Modelo" hint="Automático usa o melhor modelo instalado que sabe escolher comandos">
+        <Select aria-label="Modelo do assistente" value={chosen} onChange={(e) => void choose(e.target.value)} className="sm:w-72">
+          <option value="">Automático{best ? ` (${best})` : ''}</option>
+          {installed.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </Select>
+      </Field>
+    </div>
   )
 }
 
@@ -482,6 +528,9 @@ export default function Settings() {
       <Card title="Notificações">
         <NotificationsForm />
         <NotificationDiagnostics />
+      </Card>
+      <Card title="Assistente">
+        <ModelForm />
       </Card>
       <Card title="Voz">
         <VoiceForm />

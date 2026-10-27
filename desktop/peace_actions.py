@@ -18,6 +18,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import unicodedata
 import uuid
@@ -46,6 +47,11 @@ MIN_HYPRLAND = (0, 56)  # the Lua dispatchers (hl.dsp.*) used below
 ADDRESS = re.compile(r"^0x[0-9a-f]{1,16}$")
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 GROUP_COLORS = ("grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange")
+
+
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    import peace_win32 as win32  # Win32 windows, Start-menu apps, ShellExecute and the Recycle Bin
 
 
 class ActionError(Exception):
@@ -143,9 +149,9 @@ def done(message: str, verified: bool = True, **data: Any) -> dict:
 # --- files ----------------------------------------------------------------------------------------------
 
 def file_roots() -> dict[str, Path]:
-    """Folders file tools may touch. PEACE_FILE_ROOTS="name=/path:name2=~/path" replaces the defaults."""
+    """Folders file tools may touch. PEACE_FILE_ROOTS="name=/path:name2=~/path" (";" on Windows) replaces the defaults."""
     if spec := os.environ.get("PEACE_FILE_ROOTS"):
-        pairs = [p.split("=", 1) for p in spec.split(":") if "=" in p]
+        pairs = [p.split("=", 1) for p in spec.split(os.pathsep) if "=" in p]
         roots = {n.strip(): Path(p).expanduser() for n, p in pairs if NAME.fullmatch(n.strip())}
     else:
         roots = {"vault": VAULT, "documentos": HOME / "Documents", "transferencias": HOME / "Downloads",
@@ -199,7 +205,7 @@ def _display(path: Path) -> str:
 
 
 def _new_name(name: str) -> str:
-    if not name or "/" in name or name.startswith(".") or len(name.encode()) > 255:
+    if not name or any(c in name for c in '/\\<>:"|?*') or name.startswith(".") or len(name.encode()) > 255:
         raise ActionError("path_not_allowed", "Nome inválido.")
     return name
 
@@ -286,6 +292,8 @@ def files_list(path: str, root: str | None = None) -> dict:
 
 
 def _windows_snapshot() -> list[dict] | None:
+    if WINDOWS:
+        return win32.clients()
     try:
         return hyprland().clients()
     except ActionError:
@@ -313,7 +321,8 @@ def _new_window(before: list[dict] | None, match: Callable[[dict], bool], wait: 
 def files_open(path: str | None = None, root: str | None = None, query: str | None = None) -> dict:
     target = _target(path, root, query, unique=False)
     before = _windows_snapshot()
-    if _spawn(["gio", "open", str(target)]).returncode:
+    opened = win32.shell_open(str(target)) if WINDOWS else not _spawn(["gio", "open", str(target)]).returncode
+    if not opened:
         raise ActionError("open_failed", "Nenhuma aplicação aceitou abrir o ficheiro.")
     stem = _fold(target.stem)[:40]
     window = _new_window(before, lambda c: stem in _fold(c.get("title", "")), OPEN_WAIT)
@@ -361,6 +370,10 @@ def files_move(dest_dir: str, overwrite: bool, path: str | None = None, root: st
 
 
 def _trash(target: Path) -> None:
+    if WINDOWS:
+        if not win32.trash(target):
+            raise ActionError("trash_failed", "Não consegui pôr na Reciclagem.")
+        return
     try:
         proc = subprocess.run(["gio", "trash", "--", str(target)], capture_output=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
@@ -382,6 +395,8 @@ def files_trash(path: str | None = None, root: str | None = None, query: str | N
 
 def applications() -> dict[str, dict]:
     """Installed, visible desktop entries by id (e.g. "kitty", "md.obsidian.Obsidian"); earlier dirs win."""
+    if WINDOWS:
+        return win32.applications()
     dirs = [Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")), HOME / ".local/share/flatpak/exports/share"]
     dirs += [Path(d) for d in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if d]
     dirs.append(Path("/var/lib/flatpak/exports/share"))
@@ -439,7 +454,9 @@ def apps_launch(app: str, files: list[str] | None = None, root: str | None = Non
     entry = find_app(app)
     paths = [str(resolve(f, root)[1]) for f in files or []]
     before = _windows_snapshot()
-    if _spawn(["gio", "launch", entry["path"], *paths]).returncode:
+    launched = win32.shell_open(entry["path"], " ".join(f'"{p}"' for p in paths)) if WINDOWS else \
+        not _spawn(["gio", "launch", entry["path"], *paths]).returncode  # Windows paths cannot contain quotes
+    if not launched:
         raise ActionError("launch_failed", f"Não consegui abrir {entry['name']}.")
     window = _new_window(before, _app_window(entry), LAUNCH_WAIT)
     if window:
@@ -495,6 +512,8 @@ _hypr: dict[str, Hyprland] = {}
 
 def hyprland() -> Hyprland:
     """The session's Hyprland; after a compositor restart the agent's signature is stale, so the newest live one."""
+    if WINDOWS:
+        raise ActionError("unsupported", "Áreas de trabalho e disposições guardadas não existem no Windows.")
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
     folder = RUNTIME / "hypr" if RUNTIME else None
     if folder and re.fullmatch(r"[A-Za-z0-9_]+", sig) and (folder / sig / ".socket.sock").exists():
@@ -565,12 +584,16 @@ WORKSPACE = _int(1, 99, required=True)
 
 @tool("windows.list", "windows", "Janelas abertas.", {})
 def windows_list() -> dict:
-    clients = hyprland().clients()
+    clients = win32.clients() if WINDOWS else hyprland().clients()
     return done(f"{len(clients)} janelas abertas.", items=[_public(c) for c in clients])
 
 
 @tool("windows.focus", "windows", "Dar foco a uma janela.", {"window": WINDOW})
 def windows_focus(window: str) -> dict:
+    if WINDOWS:
+        c = find_window(win32.clients(), window)
+        ok = win32.focus(c["address"])
+        return done(f"Foco em {c.get('class') or 'janela'}.", verified=ok)
     h = hyprland()
     c = find_window(h.clients(), window)
     h.dispatch(dsp("focus", window=f"address:{c['address']}"))
@@ -626,6 +649,12 @@ PERCENT = {k: _int(0, 90, required=True) for k in ("x", "y")} | {k: _int(10, 100
 @tool("windows.place", "windows", "Pôr uma janela flutuante numa posição e tamanho (percentagem do monitor).",
       {"window": WINDOW, **PERCENT})
 def windows_place(window: str, x: int, y: int, width: int, height: int) -> dict:
+    if WINDOWS:
+        c = find_window(win32.clients(), window)
+        target = win32.place(c["address"], x, y, width, height)
+        # Windows 10/11 draw ~7 px invisible borders around windows: allow for them.
+        ok = _wait_for(lambda: all(abs(a - b) <= 20 for a, b in zip(win32.rect(c["address"]), target)))
+        return done(f"Arrumei {c.get('class') or 'a janela'}.", verified=ok)
     h = hyprland()
     c = find_window(h.clients(), window)
     return done(f"Arrumei {c.get('class') or 'a janela'}.", verified=place(h, c, x, y, width, height))
@@ -633,10 +662,15 @@ def windows_place(window: str, x: int, y: int, width: int, height: int) -> dict:
 
 @tool("windows.close", "windows", "Fechar uma janela (pode perder trabalho não guardado).", {"window": WINDOW}, destructive=True)
 def windows_close(window: str) -> dict:
-    h = hyprland()
-    c = find_window(h.clients(), window)
-    h.dispatch(dsp("window.close", window=f"address:{c['address']}"))
-    gone = _wait_for(lambda: _client(c["address"]) is None, 3)
+    if WINDOWS:
+        c = find_window(win32.clients(), window)
+        win32.close(c["address"])
+        gone = _wait_for(lambda: not win32.exists(c["address"]), 3)
+    else:
+        h = hyprland()
+        c = find_window(h.clients(), window)
+        h.dispatch(dsp("window.close", window=f"address:{c['address']}"))
+        gone = _wait_for(lambda: _client(c["address"]) is None, 3)
     return done(f"Fechei {c.get('class') or 'a janela'}." if gone else
                 f"Pedi para fechar {c.get('class') or 'a janela'}, mas continua aberta (talvez peça para guardar).", verified=gone)
 

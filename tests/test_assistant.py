@@ -108,7 +108,7 @@ def _model_says(monkeypatch, body=None, error=None, writes=None):
     def llm(method, path, **kw):
         if error:
             raise error
-        assert (method, path) == ("POST", "/api/chat") and kw["json"]["model"] == assistant.LLM_MODEL
+        assert (method, path) == ("POST", "/api/chat") and kw["json"]["model"] == assistant.current_model()
         if "tools" not in kw["json"]:
             return FakeResponse({"message": {"content": writes(kw["json"]["messages"]) if writes else ""}})
         return FakeResponse(body)
@@ -119,7 +119,7 @@ def _model_says(monkeypatch, body=None, error=None, writes=None):
 def test_model_picks_the_command_but_the_data_answers(client, session, data, monkeypatch):
     _model_says(monkeypatch, {"message": {"tool_calls": [{"function": {"name": "deadlines", "arguments": {"days": 3}}}]}})
     r = client.post("/api/v1/assistant/ask", json={"text": "tenho algo importante nos próximos dias?"}).json()
-    assert (r["via"], r["intent"], r["model"]) == ("model", "deadlines", assistant.LLM_MODEL)
+    assert (r["via"], r["intent"], r["model"]) == ("model", "deadlines", assistant.current_model())
     assert r["reply"].startswith("Nos próximos 3 dias: 0 prazos e 1 avaliação. O mais próximo é MOAD (Frequência 1), amanhã às 16:00.")
 
 
@@ -271,3 +271,20 @@ def test_greetings_are_answered_without_the_model(client, data, monkeypatch, tex
     r = client.post("/api/v1/assistant/ask", json={"text": text}).json()
     assert (r["via"], r["reply"]) == ("rules", reply)
     assert client.post("/api/v1/assistant/ask", json={"text": "olá, o que tenho amanhã?"}).json()["intent"] == "day"
+
+
+def test_the_best_installed_model_is_used_unless_settings_choose_one(client, monkeypatch):
+    from peace import llm
+
+    monkeypatch.setattr(assistant, "llm_reachable", llm.llm_reachable)  # the real check, over a fake Ollama
+    monkeypatch.setattr(llm, "_llm", lambda method, path, **kw: FakeResponse(
+        {"models": [{"name": "llama3.2:3b"}, {"name": "qwen3:4b"}, {"name": "nomic-embed-text"}]}))
+    llm.forget_model_check()
+    got = client.get("/api/v1/assistant/models").json()
+    assert (got["using"], got["chosen"]) == ("qwen3:4b", "")  # a laptop without gpt-oss:20b
+    assert client.put("/api/v1/preferences/assistant", json={"model": "llama3.2:3b"}).status_code == 204
+    assert client.get("/api/v1/assistant/models").json()["using"] == "llama3.2:3b"
+    client.put("/api/v1/preferences/assistant", json={"model": "gpt-oss:20b"})  # chosen but not installed
+    assert client.get("/api/v1/assistant/models").json()["using"] is None and not llm.llm_reachable()
+    assert client.put("/api/v1/preferences/assistant", json={"model": "x; rm -rf"}).status_code == 422
+    llm.forget_model_check()

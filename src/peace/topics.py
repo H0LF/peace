@@ -14,7 +14,7 @@ import httpx
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from peace.llm import LLM_MODEL, LLM_OPTIONS, _llm, llm_reachable, mark_unreachable
+from peace.llm import current_model, LLM_OPTIONS, _llm, llm_reachable, mark_unreachable
 from peace.models import Material
 
 log = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ def read_topics(m: Material) -> tuple[list[str], str] | None:
     prompt = PROMPT.format(name=m.filename or m.title, course=m.course.name if m.course else "?", text=m.content[:MAX_CHARS])
     try:
         r = _llm("POST", "/api/chat", timeout=120, json={
-            "model": LLM_MODEL, "stream": False, "think": "low", "format": SCHEMA, "keep_alive": "10m",
+            "model": current_model(), "stream": False, "think": "low", "format": SCHEMA, "keep_alive": "10m",
             "options": LLM_OPTIONS, "messages": [{"role": "user", "content": prompt}],
         })
         r.raise_for_status()
@@ -93,10 +93,10 @@ def analyze_pending(session: Session, now: datetime, limit: int = 10, budget_s: 
             if not llm_reachable():
                 break  # the PC went away; the rest waits for the next tick
             m.topics_at = now  # an answer outside the schema: don't retry this version forever
-            m.topics, m.doc_kind, m.topics_model = [], "other", LLM_MODEL
+            m.topics, m.doc_kind, m.topics_model = [], "other", current_model()
         else:
             m.topics, m.doc_kind = result
-            m.topics_model, m.topics_at = LLM_MODEL, now
+            m.topics_model, m.topics_at = current_model(), now
             done += 1
         session.commit()
     return done

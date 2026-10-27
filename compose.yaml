@@ -18,7 +18,9 @@ services:
       retries: 20
 
   api: &app
-    build: .
+    build:
+      context: .
+      target: app
     restart: unless-stopped
     env_file: ${PEACE_ENV_FILE:-secrets/peace.env}
     environment:
@@ -54,6 +56,20 @@ services:
       api:
         condition: service_healthy
 
+  # Speech for push-to-talk: the desktop agent sends what it records and plays what comes back.
+  voice:
+    build:
+      context: .
+      target: voice
+    restart: unless-stopped
+    environment:
+      PEACE_STT_MODEL: ${PEACE_STT_MODEL:-small}  # the installer picks "medium" on faster PCs
+      HF_HOME: /home/peace/.cache/huggingface
+    volumes:
+      - voicemodels:/home/peace/.cache/huggingface
+    ports:
+      - "127.0.0.1:3900:3900"
+
 secrets:
   db_password:
     file: ${PEACE_DB_PASSWORD_FILE:-secrets/db_password}
@@ -61,3 +77,4 @@ secrets:
 volumes:
   pgdata:
   peacedata:
+  voicemodels:

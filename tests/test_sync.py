@@ -207,17 +207,37 @@ def test_settings_switch_off_a_source_and_keep_passwords_write_only(client, monk
     monkeypatch.delenv("INFORESTUDANTE_USERNAME", raising=False)
     monkeypatch.delenv("INFORESTUDANTE_PASSWORD", raising=False)
     got = client.get("/api/v1/preferences/integrations").json()
-    assert got["moodle"] == {"enabled": True, "username": "env-user", "has_password": True}
+    assert got["moodle"] == {"enabled": True, "url": "https://moodle.example.pt/moodle", "username": "env-user", "has_password": True}
     assert got["inforestudante"]["has_password"] is False
 
     r = client.put("/api/v1/preferences/integrations", json={
         "inforestudante": {"enabled": False, "username": "a2020", "password": "s3cret"},
-        "moodle": {"enabled": True, "username": "a2020@example.pt", "password": ""}})
+        "moodle": {"enabled": True, "url": "https://moodle.other.pt/", "username": "a2020@example.pt", "password": ""}})
     assert r.status_code == 200 and "s3cret" not in r.text and "env-pass" not in r.text
     assert sync_module._credentials("inforestudante") == ("a2020", "s3cret")
     assert sync_module._credentials("moodle") == ("a2020@example.pt", "env-pass")  # empty keeps the current password
+    from peace.sources import moodle
+    assert moodle.PLUGINFILE == "https://moodle.other.pt/webservice/pluginfile.php/"  # the address from Settings
+    moodle.configure("https://moodle.example.pt/moodle")
+    assert client.put("/api/v1/preferences/integrations", json={
+        "inforestudante": {"enabled": True, "url": ""}, "moodle": {"enabled": False}}).status_code == 422
+    assert client.put("/api/v1/preferences/integrations", json={
+        "inforestudante": {"enabled": False, "url": "javascript:alert(1)"}, "moodle": {"enabled": False}}).status_code == 422
     assert "s3cret" not in str([a.detail for a in session.query(AuditEvent)])
 
     assert client.post("/api/v1/sync").json()["started"] == ["moodle"]
     assert [x.source for x in session.query(SyncRun)] == ["moodle"]
     assert [s["source"] for s in client.get("/api/v1/sync/status").json()] == ["moodle"]
+
+
+@pytest.mark.parametrize("source, pasted, base", [
+    ("moodle", "https://moodle.example.pt/moodle/login/index.php?x=1", "https://moodle.example.pt/moodle"),
+    ("moodle", "https://moodle.example.pt/my/", "https://moodle.example.pt"),
+    ("moodle", "https://elearning.uni.pt/course/view.php?id=7", "https://elearning.uni.pt"),
+    ("moodle", "https://moodle.example.pt/moodle/", "https://moodle.example.pt/moodle"),
+    ("inforestudante", "https://inforestudante.example.pt/nonio/security/login.do", "https://inforestudante.example.pt/nonio"),
+    ("inforestudante", "https://inforestudante.example.pt/nonio", "https://inforestudante.example.pt/nonio"),
+])
+def test_a_pasted_page_address_becomes_the_site_address(source, pasted, base):
+    from peace.sync import site_address
+    assert site_address(source, pasted) == base

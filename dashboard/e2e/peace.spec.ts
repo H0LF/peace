@@ -23,6 +23,14 @@ test('pages are protected and a wrong token is refused', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText('Token inválido.')
 })
 
+test('the installer link logs in once and leaves no token in the address', async ({ page }) => {
+  await page.goto('/entrar#token=' + TOKEN)
+  await expect(page).toHaveURL('/')
+  expect(await page.evaluate(() => window.location.href)).not.toContain(TOKEN)
+  await page.goBack()
+  expect(await page.evaluate(() => window.location.href)).not.toContain(TOKEN)
+})
+
 test('notification settings queue a native desktop test and explain visibility limits', async ({ page }) => {
   await login(page)
   await page.goto('/definicoes')
@@ -337,6 +345,7 @@ test('integrations: a source can be switched off and its password is never shown
   const health = page.locator('ul').filter({ hasText: 'Moodle' }).first()
   await expect(health).toContainText('Inforestudante')
   await page.getByRole('checkbox', { name: 'Ligar Inforestudante' }).uncheck()
+  await expect(page.getByLabel('Endereço').nth(1)).toHaveValue('https://moodle.example.pt/moodle')
   await page.getByLabel('Utilizador').nth(1).fill('a2020@example.pt')
   await page.getByLabel('Palavra-passe').nth(1).fill('segredo-e2e')
   await page.getByRole('button', { name: 'Guardar integrações' }).click()

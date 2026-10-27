@@ -24,6 +24,13 @@ LOOKBACK = timedelta(days=14)
 PLUGINFILE = f"{BASE}/webservice/pluginfile.php/"
 
 
+def configure(base: str) -> None:
+    """Use the Moodle address from Settings. shortcut: module-wide, fine with one student per PEACE."""
+    global BASE, PLUGINFILE
+    BASE = base.rstrip("/")
+    PLUGINFILE = f"{BASE}/webservice/pluginfile.php/"
+
+
 @dataclass
 class Snapshot:
     courses: list[dict[str, Any]]

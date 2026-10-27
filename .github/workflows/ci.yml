@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: peace
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: peace_test
+        ports: ["55432:5432"]
+        options: --health-cmd "pg_isready -U peace" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra voice
+      - run: uv run pytest -q
+        env:
+          PEACE_DATABASE_URL: postgresql+psycopg://peace@127.0.0.1:55432/peace_test
+      - name: Installer scripts parse
+        run: bash -n install.sh desktop/install-local.sh scripts/*.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the images Windows installs (api/worker and voice)
+        run: |
+          mkdir -p secrets && echo x > secrets/db_password && echo "PEACE_API_TOKEN=$(openssl rand -hex 24)" > secrets/peace.env
+          docker compose build
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Installer parses and passes the script analyzer
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | Format-List; exit 1 }
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer install.ps1 -Severity Error, Warning -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions, PSUseBOMForUnicodeEncodedFile, PSAvoidUsingInvokeExpression
+          $issues | Format-Table -AutoSize
+          if ($issues) { exit 1 }
+      - name: PostgreSQL for the test suite (preinstalled, stopped)
+        shell: pwsh
+        run: |
+          Set-Service postgresql-x64-* -StartupType Manual
+          Start-Service postgresql-x64-*
+          & "$env:PGBIN\psql.exe" -U postgres -c "CREATE ROLE peace LOGIN SUPERUSER PASSWORD 'peace'" -c "CREATE DATABASE peace_test OWNER peace"
+        env:
+          PGPASSWORD: root
+      - run: uv sync --frozen
+      - name: Windows agent and actions (stand-ins) on Windows
+        run: uv run --with numpy pytest -q tests/test_windows_agent.py
+        env:
+          PEACE_DATABASE_URL: postgresql+psycopg://peace:peace@127.0.0.1:5432/peace_test
+      - name: Real Win32, PortAudio and toasts load on Windows
+        shell: pwsh
+        run: |
+          uv run --with sounddevice --with numpy --with windows-toasts python -c @"
+          import sys; sys.path.insert(0, 'desktop')
+          import peace_win32 as w
+          print('windows', len(w.clients()), 'start-menu apps', len(w.applications()))
+          import peace_windows as agent
+          agent.install()
+          print('devices', agent.audio_devices())
+          print('keys', agent.keys_held('SUPER + Y'))
+          import windows_toasts
+          print('ok')
+          "@

@@ -17,6 +17,14 @@ dependencies = [
 [project.scripts]
 peace-api = "peace.api:main"
 peace-worker = "peace.worker:main"
+peace-voice = "peace.voice:main"
+
+[project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.2",
+    "python-multipart>=0.0.20",
+    "supertonic>=1.3.1",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]

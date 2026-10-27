@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PEACE on Linux in one command: ./install.sh
-# Installs what is missing (asks before using sudo), asks for your school's Moodle/Nonio addresses, then sets
-# PEACE up as systemd user services (desktop/install-local.sh). Safe to run again; nothing you set is replaced.
+# Installs what is missing (asks before using sudo), then sets PEACE up as systemd user services
+# (desktop/install-local.sh). Everything else is set in the dashboard. Safe to run again; nothing is replaced.
 set -euo pipefail
 cd "$(dirname "$0")"
 repo=$(pwd)
@@ -43,21 +43,7 @@ if [ ! -f dashboard/dist/index.html ]; then
   (cd dashboard && npm ci --no-audit --no-fund && npm run build)
 fi
 
-# 4. Your school's addresses. Logins go in the dashboard (Definições → Integrações), never in this script.
-umask 077
-mkdir -p "$conf"
-touch "$conf/peace.env"
-chmod 600 "$conf/peace.env"
-if ! grep -q '^MOODLE_URL=' "$conf/peace.env"; then
-  url=$(ask "Your school's Moodle address (e.g. https://moodle.example.pt/moodle), empty to skip:" "")
-  echo "MOODLE_URL=${url%/}" >> "$conf/peace.env"
-fi
-if ! grep -q '^INFORESTUDANTE_URL=' "$conf/peace.env"; then
-  url=$(ask "inforestudante/Nónio address (e.g. https://inforestudante.example.pt/nonio), empty to skip:" "")
-  echo "INFORESTUDANTE_URL=${url%/}" >> "$conf/peace.env"
-fi
-
-# 5. Database, services, desktop agent.
+# 4. Database, services, desktop agent.
 desktop/install-local.sh
 
 token=$(grep -m1 '^PEACE_API_TOKEN=' "$conf/peace.env" | cut -d= -f2-)
@@ -66,5 +52,5 @@ cat <<EOF
 PEACE is installed in $repo.
   Open:   http://127.0.0.1:8420
   Token:  $token   (the first login asks for it; it is also in $conf/peace.env)
-Then add your logins in Definições → Integrações and press «Sincronizar».
+Then, in Definições → Integrações, enter your university's addresses and logins and press «Sincronizar».
 EOF

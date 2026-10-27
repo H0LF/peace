@@ -1,5 +1,5 @@
 import { KeyRound } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router'
 import { Button, Field, Input } from '../components/ui'
 import { OrbMark } from '../components/Layout'
@@ -11,12 +11,23 @@ export default function Login() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // The installer opens /entrar#token=…: the fragment never reaches the server or its logs, and is wiped at once.
+  useEffect(() => {
+    const given = new URLSearchParams(window.location.hash.slice(1)).get('token')
+    if (!given) return
+    history.replaceState(null, '', window.location.pathname)
+    void enter(given)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   async function submit(e: FormEvent) {
     e.preventDefault()
+    await enter(token)
+  }
+  async function enter(value: string) {
     setBusy(true)
     setError('')
     try {
-      await api.login(token.trim())
+      await api.login(value.trim())
       navigate('/', { replace: true })
     } catch {
       setError('Token inválido.')
@@ -35,7 +46,7 @@ export default function Login() {
             <p className="mt-1 text-[13px] text-muted">Só é preciso uma vez neste navegador.</p>
           </div>
         </div>
-        <Field label="Token de acesso" hint="PEACE_API_TOKEN, em ~/peace-secrets/peace.env no servidor.">
+        <Field label="Token de acesso" hint="Mostrado no fim da instalação (PEACE_API_TOKEN no ficheiro peace.env da PEACE).">
           <Input type="password" autoComplete="current-password" autoFocus required value={token} onChange={(e) => setToken(e.target.value)} />
         </Field>
         {error && (

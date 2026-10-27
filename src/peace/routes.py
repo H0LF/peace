@@ -637,6 +637,7 @@ def put_notify_prefs(body: NotifyPrefs, session: Session = DB):
 class SourceLogin(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
+    url: str = Field("", max_length=300, pattern=r"^(https://[^\s/?#]+(/[^\s?#]*)?)?$")  # the school's own address
     username: str = Field("", max_length=200)
     password: str = Field("", max_length=200)  # empty: keep the saved one. Write-only, never sent back
 
@@ -648,7 +649,7 @@ class IntegrationsIn(BaseModel):
 
 
 def _integrations_out(session: Session) -> dict[str, Any]:
-    return {src: {"enabled": v["enabled"], "username": v["username"], "has_password": bool(v["password"])}
+    return {src: {"enabled": v["enabled"], "url": v["url"], "username": v["username"], "has_password": bool(v["password"])}
             for src, v in sync.integrations(session).items()}
 
 
@@ -663,14 +664,18 @@ def put_integrations(body: IntegrationsIn, session: Session = DB):
     saved = dict(row.value) if row else {}
     for src in sync.SOURCES:
         new = getattr(body, src)
+        if new.enabled and not new.url:
+            raise HTTPException(422, f"Escreve o endereço do {src.capitalize()} para o ligar.")
         old = saved.get(src, {})
-        saved[src] = {"enabled": new.enabled, "username": new.username.strip(), "password": new.password or old.get("password", "")}
+        saved[src] = {"enabled": new.enabled, "url": sync.site_address(src, new.url), "username": new.username.strip(),
+                      "password": new.password or old.get("password", "")}
     if row:
         row.value = saved
     else:
         session.add(Preference(key="integrations", value=saved))
     # The audit trail never holds a password.
-    _audit(session, "preferences.integrations", **{src: {"enabled": v["enabled"], "username": v["username"]} for src, v in saved.items()})
+    _audit(session, "preferences.integrations",
+           **{src: {"enabled": v["enabled"], "url": v["url"], "username": v["username"]} for src, v in saved.items()})
     session.commit()
     sync._moodle_token.clear()  # the next download logs in with the new account
     return _integrations_out(session)

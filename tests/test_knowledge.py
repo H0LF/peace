@@ -255,7 +255,7 @@ def test_topics_are_read_once_and_again_after_a_change(session, monkeypatch):
     monkeypatch.setattr(topics_mod, "llm_reachable", lambda: True)
     assert topics_mod.analyze_pending(session, NOW) == 1
     session.refresh(m)
-    assert (m.topics, m.doc_kind, m.topics_model) == (["formas normais", "3FN"], "slides", topics_mod.LLM_MODEL)
+    assert (m.topics, m.doc_kind, m.topics_model) == (["formas normais", "3FN"], "slides", topics_mod.current_model())
     assert topics_mod.analyze_pending(session, NOW) == 0 and len(calls) == 1
     m.fetched_at = NOW + timedelta(days=1)  # a new version was downloaded
     session.commit()

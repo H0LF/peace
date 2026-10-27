@@ -26,7 +26,8 @@ from peace import schemas as s
 from peace.auth import require_token
 from peace.db import get_session
 from peace.models import PLANNABLE_STATUSES, AssistantMessage, Course, Event, Material, Preference, StudySession
-from peace.llm import LLM_MODEL, LLM_OPTIONS, LLM_TIMEOUT, _llm, llm_reachable, mark_unreachable
+from peace.llm import (LLM_OPTIONS, LLM_TIMEOUT, PREFERRED, _llm, current_model, forget_model_check, installed_models,
+                       llm_reachable, mark_unreachable, wanted_model)
 from peace.notifications import WEEKDAYS, focus_until
 
 log = logging.getLogger(__name__)
@@ -567,7 +568,7 @@ def match_llm(text: str, history: list[AssistantMessage], today: date) -> tuple[
     messages.append({"role": "user", "content": text})
     try:
         r = _llm("POST", "/api/chat", timeout=LLM_TIMEOUT, json={
-            "model": LLM_MODEL, "messages": messages, "tools": _tools(), "stream": False, "think": "low",
+            "model": current_model(), "messages": messages, "tools": _tools(), "stream": False, "think": "low",
             "keep_alive": "10m", "options": LLM_OPTIONS,
         })
         r.raise_for_status()
@@ -610,7 +611,7 @@ def _say(messages: list[dict[str, str]]) -> str | None:
     """Free text from the model (no tools). None when it is unreachable or says nothing."""
     try:
         r = _llm("POST", "/api/chat", timeout=LLM_TIMEOUT, json={
-            "model": LLM_MODEL, "messages": messages, "stream": False, "think": "low", "keep_alive": "10m",
+            "model": current_model(), "messages": messages, "stream": False, "think": "low", "keep_alive": "10m",
             "options": LLM_OPTIONS,
         })
         r.raise_for_status()
@@ -749,7 +750,7 @@ def ask(session: Session, text: str, source: str, now: datetime) -> dict[str, An
     # Voice: the desktop moves on to "speaking"; typed: done.
     set_state(session, "thinking" if source == "voice" else "idle", now)
     return {"reply": reply.text, "intent": reply.intent, "items": reply.items, "to": reply.to, "via": via,
-            "model": LLM_MODEL if via != "rules" else None, "job": reply.job}
+            "model": current_model() if via != "rules" else None, "job": reply.job}
 
 
 def status(session: Session, now: datetime) -> dict[str, Any]:
@@ -760,7 +761,7 @@ def status(session: Session, now: datetime) -> dict[str, Any]:
     until = focus_until(session, now)
     return {
         "state": current_state(session, now),
-        "model": {"name": LLM_MODEL, "reachable": llm_reachable()},
+        "model": {"name": current_model(), "reachable": llm_reachable()},
         "desktop": {"connected": connected, "seen_at": seen, "actions": caps.get("actions", {})},
         "voice": {"available": bool(caps.get("voice")), "name": caps.get("voice_name"), "shortcut": caps.get("ptt"),
                   "voices": caps.get("voices", []), "audio": caps.get("audio", {})},
@@ -899,6 +900,25 @@ def list_messages(limit: int = Query(20, ge=1, le=200), session: Session = DB):
 @router.get("/assistant/status")
 def status_endpoint(session: Session = DB, now: datetime = NOW):
     return status(session, now)
+
+
+class ModelChoice(s.In):
+    model: str = Field("", max_length=100, pattern=r"^[A-Za-z0-9._:/-]*$")  # empty: the best one installed
+
+
+@router.get("/assistant/models")
+def models_endpoint():
+    """Models installed in Ollama, which one PEACE uses and which one was chosen ("" = automatic)."""
+    reachable = llm_reachable()
+    return {"installed": installed_models(), "using": current_model() if reachable else None,
+            "chosen": wanted_model(), "preferred": list(PREFERRED)}
+
+
+@router.put("/preferences/assistant", status_code=204)
+def choose_model(body: ModelChoice, session: Session = DB):
+    _put(session, "assistant", {"model": body.model})
+    session.commit()
+    forget_model_check()
 
 
 @router.post("/assistant/state", status_code=204)
