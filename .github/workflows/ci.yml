@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04  # its pg_dump is 16, matching the service below; a newer dump will not load into 16
+    runs-on: ubuntu-26.04  # its pg_dump is 18, matching the service below; its bubblewrap has the overlay options
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: peace
           POSTGRES_HOST_AUTH_METHOD: trust
