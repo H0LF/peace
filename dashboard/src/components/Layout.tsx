@@ -2,6 +2,7 @@ import {
   Activity,
   BookOpen,
   CalendarDays,
+  ClipboardCheck,
   FolderOpen,
   GraduationCap,
   Hourglass,
@@ -16,6 +17,7 @@ import {
   Settings,
   SquareCheckBig,
   X,
+  Mail,
 } from 'lucide-react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
@@ -23,21 +25,26 @@ import { api } from '../lib/api'
 import { ago } from '../lib/format'
 import { useApi, useNow } from '../lib/hooks'
 import { applyAccent } from '../lib/theme'
+import { setVaultName } from './materials'
 import { healthTone, SOURCE_NAME } from './sync'
+import { HoloButton, HoloHandsProvider } from '../holo/HoloHands'
 import { TaskDialog } from './tasks'
 import { Button, Dialog, Kbd, cx } from './ui'
+import { VoiceCue } from './voice'
 
-// `rail`: shown as an icon in the narrow sidebar; the rest live in the drawer, the shortcuts and the pages.
+// `rail`: shown as an icon in the dock; the rest live in the drawer, the shortcuts and the pages.
 const NAV = [
   { to: '/', label: 'Início', icon: House, key: 'h', rail: true },
   { to: '/calendario', label: 'Calendário', icon: CalendarDays, key: 'c', rail: true },
-  { to: '/painel', label: 'Painel', icon: LayoutList, key: 'd', rail: true },
+  { to: '/painel', label: 'Painel', icon: LayoutList, key: 'd', rail: false },
   { to: '/estudo', label: 'Estudo', icon: GraduationCap, key: 'e', rail: true },
   { to: '/tarefas', label: 'Tarefas', icon: SquareCheckBig, key: 't', rail: true },
-  { to: '/conhecimento', label: 'Conhecimento', icon: Network, key: 'k', rail: true },
+  { to: '/conhecimento', label: 'Graphify', icon: Network, key: 'k', rail: true },
+  { to: '/rever', label: 'Rever', icon: ClipboardCheck, key: 'r', rail: false },
+  { to: '/correio', label: 'Correio', icon: Mail, key: 'm', rail: false },
   { to: '/ficheiros', label: 'Ficheiros', icon: FolderOpen, key: 'f', rail: true },
-  { to: '/prazos', label: 'Prazos', icon: Hourglass, key: 'p', rail: false },
-  { to: '/cadeiras', label: 'Cadeiras', icon: BookOpen, key: 'u', rail: false },
+  { to: '/prazos', label: 'Prazos', icon: Hourglass, key: 'p', rail: true },
+  { to: '/cadeiras', label: 'Cadeiras', icon: BookOpen, key: 'u', rail: true },
   { to: '/atividade', label: 'Atividade', icon: Activity, key: 'a', rail: false },
   { to: '/definicoes', label: 'Definições', icon: Settings, key: 's', rail: true },
 ]
@@ -93,7 +100,23 @@ function SyncDot({ withText = false }: { withText?: boolean }) {
   )
 }
 
+/** Holo Hands wraps the whole shell, so it keeps running while the student changes pages. */
 export function Layout() {
+  return (
+    <HoloHandsProvider>
+      <Shell />
+    </HoloHandsProvider>
+  )
+}
+
+/** On other pages too: you can see when PEACE is hearing you. The main page shows it under the orb. */
+function PageVoiceCue() {
+  const status = useApi(() => api.assistantStatus(), [], 2_000)
+  const state = status.data?.state ?? 'idle'
+  return state === 'idle' ? null : <div className="fixed top-4 left-1/2 z-40 -translate-x-1/2"><VoiceCue state={state} /></div>
+}
+
+function Shell() {
   const navigate = useNavigate()
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -106,6 +129,7 @@ export function Layout() {
   // The saved accent (index.html already painted the cached one; this catches changes from another device).
   useEffect(() => {
     api.appearance().then((a) => applyAccent(a.accent), () => undefined)
+    api.obsidian().then((o) => o.vault && setVaultName(o.vault.name), () => undefined)
   }, [])
 
   const railToggle = useRef<HTMLButtonElement>(null) // focus follows the toggle across hide/show
@@ -188,12 +212,12 @@ export function Layout() {
   return (
     <div className="flex min-h-dvh">
       {rail && (
-        <aside className="sticky top-0 hidden h-dvh w-[76px] shrink-0 flex-col items-center gap-5 border-r border-line/70 py-5 lg:flex">
-          <NavLink to="/" aria-label="PEACE, início" className="grid justify-items-center gap-1.5">
-            <OrbMark className="size-11" />
-            <span className="font-display text-[10px] font-semibold tracking-[0.25em] text-muted">PEACE</span>
+        <aside className="glass fixed bottom-4 left-1/2 z-30 hidden -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5 lg:flex">
+          <NavLink to="/" aria-label="PEACE, início" className="grid size-10 place-items-center">
+            <OrbMark className="size-7" />
           </NavLink>
-          <nav aria-label="Principal" className="mt-3 grid gap-2">
+          <span aria-hidden className="mx-1 h-6 w-px bg-line" />
+          <nav aria-label="Principal" className="flex items-center gap-1">
             {NAV.filter((n) => n.rail).map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
@@ -203,27 +227,30 @@ export function Layout() {
                 aria-label={label}
                 className={({ isActive }) =>
                   cx(
-                    'grid size-11 place-items-center rounded-xl border transition-colors',
-                    isActive ? 'rail-active border-accent/30 bg-accent-soft text-accent' : 'border-transparent text-faint hover:bg-surface-2 hover:text-text',
+                    'grid size-10 place-items-center rounded-xl border transition-colors',
+                    isActive ? 'rail-active border-accent/30 bg-accent-soft text-accent' : 'border-transparent text-muted hover:bg-surface-2 hover:text-text',
                   )
                 }
               >
-                <Icon className="size-[19px]" strokeWidth={1.75} />
+                <Icon className="size-[18px]" strokeWidth={1.75} />
               </NavLink>
             ))}
           </nav>
-          <div className="mt-auto grid justify-items-center gap-1">
-            <button type="button" title="Nova tarefa (n)" aria-label="Nova tarefa" onClick={() => setNewTask(true)} className="grid size-10 place-items-center rounded-lg text-faint hover:bg-surface-2 hover:text-text">
-              <Plus className="size-4" />
-            </button>
-            <SyncDot />
-            <button type="button" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado" onClick={() => setHelp(true)} className="grid size-10 place-items-center rounded-lg text-faint hover:bg-surface-2 hover:text-text">
-              <Keyboard className="size-4" />
-            </button>
-            <button ref={railToggle} type="button" title="Esconder barra lateral" aria-label="Esconder barra lateral" onClick={toggleRail} className="grid size-10 place-items-center rounded-lg text-faint hover:bg-surface-2 hover:text-text">
-              <PanelLeftClose className="size-4" />
-            </button>
-          </div>
+          <span aria-hidden className="mx-1 h-6 w-px bg-line" />
+          <button type="button" title="Todas as páginas" aria-label="Todas as páginas" onClick={() => setMobileOpen(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
+            <MenuIcon className="size-4" />
+          </button>
+          <button type="button" title="Nova tarefa (n)" aria-label="Nova tarefa" onClick={() => setNewTask(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
+            <Plus className="size-4" />
+          </button>
+          <SyncDot />
+          <HoloButton />
+          <button type="button" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado" onClick={() => setHelp(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
+            <Keyboard className="size-4" />
+          </button>
+          <button ref={railToggle} type="button" title="Esconder barra lateral" aria-label="Esconder barra lateral" onClick={toggleRail} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
+            <PanelLeftClose className="size-4" />
+          </button>
         </aside>
       )}
       {!rail && (
@@ -233,7 +260,7 @@ export function Layout() {
           aria-label="Mostrar barra lateral"
           title="Mostrar barra lateral"
           onClick={toggleRail}
-          className="fixed top-4 left-4 z-30 hidden size-10 place-items-center rounded-xl border border-line bg-surface/80 text-muted backdrop-blur hover:text-text lg:grid"
+          className="fixed bottom-4 left-4 z-30 hidden size-10 place-items-center rounded-xl border border-line bg-surface/80 text-muted backdrop-blur hover:text-text lg:grid"
         >
           <PanelLeftOpen className="size-4" />
         </button>
@@ -250,7 +277,7 @@ export function Layout() {
           </Button>
         </header>
         {mobileOpen && (
-          <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="fixed inset-0 z-40">
             <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
             <div className="animate-rise absolute inset-y-0 left-0 flex w-72 flex-col gap-6 border-r border-line bg-bg px-3 py-5">
               <div className="flex items-center justify-between">
@@ -266,11 +293,12 @@ export function Layout() {
             </div>
           </div>
         )}
-        <main className={cx('w-full', cockpit ? 'min-h-0 flex-1' : 'mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-10 lg:py-8')}>
+        <main className={cx('w-full', cockpit ? 'min-h-0 flex-1' : 'mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-10 lg:pt-8 lg:pb-24')}>
           <Outlet />
         </main>
       </div>
 
+      {!cockpit && <PageVoiceCue />}
       <TaskDialog open={newTask} onClose={() => setNewTask(false)} />
       <Dialog open={help} onClose={() => setHelp(false)} title="Atalhos de teclado">
         <ul className="grid gap-2 text-[13px]">
@@ -290,6 +318,10 @@ export function Layout() {
           <li className="flex items-center justify-between">
             <span className="text-muted">Procurar (em Tarefas)</span>
             <Kbd>/</Kbd>
+          </li>
+          <li className="flex items-center justify-between">
+            <span className="text-muted">Holo Hands (controlar com as mãos)</span>
+            <Kbd>h</Kbd>
           </li>
         </ul>
       </Dialog>

@@ -17,6 +17,23 @@ const ACTIONS: Record<string, (d: AuditEntry['detail']) => string> = {
   'plan.generate': (d) => `Plano gerado: ${d.sessions} sessões`,
   'preferences.planner': () => 'Preferências do plano alteradas',
   'sync.manual': () => 'Sincronização manual pedida',
+  'proposal.apply': (d) => `Sugestão aplicada: ${d.title}`,
+  'proposal.reject': (d) => `Sugestão rejeitada: ${d.title}`,
+  'proposal.undo': (d) => `Sugestão desfeita: ${d.title}`,
+  'concept.add': (d) => `Conceito juntado em ${d.course}: ${d.concept}`,
+  'requirements.read': (d) => `Requisitos lidos de «${d.task}»: ${d.count}`,
+  'check.add': (d) => `Verificação criada em «${d.task}»: ${d.check}`,
+  'check.run': (d) => `Verificação «${d.check}» de «${d.task}»: ${d.status === 'passed' ? 'passou' : d.status === 'failed' ? 'falhou' : 'erro'}`,
+  'mail.clean_junk': (d) => `Lixo eletrónico limpo: ${d.count} emails para Itens Eliminados`,
+  'mail.purge': (d) => `Itens Eliminados esvaziados: ${d.count} emails que a PEACE tinha limpo há 30 dias`,
+  'mail.restore': (d) => `Email reposto: ${d.subject}`,
+  'mail.keep': (d) => `Remetentes a nunca limpar: ${d.count}`,
+  'proposal.offer_recovery': (d) => `Opções para recuperar estudo: ${(d.options as string[]).length}`,
+  'preferences.review': () => 'Regras de revisão alteradas',
+  'timer.start': () => 'Cronómetro ligado',
+  'timer.stop': (d) => `Cronómetro terminado: ${d.minutes} min`,
+  'study_log.add': (d) => `Tempo registado à mão: ${d.minutes} min`,
+  'study_log.delete': () => 'Registo de tempo apagado',
 }
 
 export default function ActivityPage() {

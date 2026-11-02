@@ -19,6 +19,7 @@ def private_voice_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "ptt_conflict", lambda combo: False)
     # Never reach the real Hyprland or Brave from these tests.
     monkeypatch.setattr(agent.actions, "availability", lambda: {"categories": [], "hyprland": False, "browser": False})
+    monkeypatch.setattr(agent.actions, "obsidian_vaults", lambda: [])  # nor the real Obsidian config
 
 NOTE = {"id": 7, "kind": "deadline", "title": "Entrega em menos de 2 horas", "body": "Q&A <b>sockets</b> · hoje às 18:00",
         "url": "/prazos", "actions": ["open", "done", "snooze"], "urgent": True, "task_id": 3, "session_id": None}
@@ -115,7 +116,7 @@ def test_capabilities_report_only_what_answers(monkeypatch):
     monkeypatch.setattr(agent.shutil, 'which', lambda name: '/usr/bin/' + name)
     monkeypatch.setattr(agent, "_up", lambda url: "3900" in url)
     assert agent.capabilities() == {"voice": True, "voice_name": "STT pt, respostas escritas", "ptt": "SUPER+Y", "llm": False, "voices": [], "audio": agent.voice_diagnostics,
-                                   "actions": {"categories": [], "hyprland": False, "browser": False}}
+                                   "actions": {"categories": [], "hyprland": False, "browser": False}, "vaults": [], "vault": agent.vault_info()}
     monkeypatch.setattr(agent, "_up", lambda url: False)
     assert agent.capabilities()["voice"] is False and agent.capabilities()["voice_name"] is None
 
@@ -465,11 +466,15 @@ def test_spoken_replies_are_translated_to_english_or_fall_back_to_portuguese(mon
     monkeypatch.setattr(agent, "set_state", lambda s: None)
     monkeypatch.setattr(agent, "RUNTIME", tmp_path)
     monkeypatch.setitem(agent.settings, "language", "en")
-    translate_fails = False
+    monkeypatch.setattr(agent, "model_allowed", lambda: allowed)
+    allowed, translate_fails = True, False
     agent.speak("Tens um exame às 17:00.")
     translate_fails = True
     agent.speak("Tens um exame às 17:00.")
-    assert [(b["input"], b["language"]) for b in sent] == [("You have an exam at 5 pm.", "en"), ("Tens um exame às 17 horas.", "pt")]
+    allowed, translate_fails = False, False  # a game holds the memory: no model load just to translate
+    agent.speak("Tens um exame às 17:00.")
+    assert [(b["input"], b["language"]) for b in sent] == [("You have an exam at 5 pm.", "en"), ("Tens um exame às 17 horas.", "pt"),
+                                                         ("Tens um exame às 17 horas.", "pt")]
 
 
 def test_push_to_talk_release_is_read_from_the_keyboards(monkeypatch, tmp_path):
@@ -489,3 +494,84 @@ def test_push_to_talk_release_is_read_from_the_keyboards(monkeypatch, tmp_path):
     assert agent.keys_held("SUPER + Y") is False
     monkeypatch.setattr(agent.Path, "glob", lambda self, pattern: [])
     assert agent.keys_held("SUPER + Y") is None  # no readable keyboard: fall back to Hyprland and the time limit
+
+
+def test_a_lost_server_is_shown_once_and_its_return_too(monkeypatch):
+    shown, polls = [], iter([OSError("down")] * (agent.SERVER_SILENT_POLLS + 5) + [[]] + [KeyboardInterrupt()])
+
+    def call(method, path, body=None):
+        if path == "/api/v1/notifications/pending":
+            result = next(polls)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+        return {}
+
+    monkeypatch.setattr(agent, "call", call)
+    monkeypatch.setattr(agent, "notify_reply", lambda heard, reply: shown.append(reply))
+    for name in ("mirror_loop", "jobs_loop"):
+        monkeypatch.setattr(agent, name, lambda: None)
+    monkeypatch.setattr(agent, "RUNTIME", None)
+    monkeypatch.setattr(agent, "NOTIFY_SECONDS", 0)
+    monkeypatch.setattr(agent, "POLL_SECONDS", 10**6)
+    monkeypatch.setattr(agent, "capabilities", lambda: {})
+    monkeypatch.setattr(agent, "notification_diagnostics", lambda: {})
+    with pytest.raises(KeyboardInterrupt):
+        agent.main()
+    assert len(shown) == 2 and "não responde" in shown[0] and "voltou" in shown[1]
+
+
+def test_hearing_can_use_its_own_server(monkeypatch, tmp_path):
+    sent = []
+
+    class Resp:
+        def read(self):
+            return b'{"text": " ola "}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(agent, "STT_URL", "http://127.0.0.1:3910")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", lambda req, timeout: sent.append(req.full_url) or Resp())
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFF")
+    assert agent.transcribe(wav) == "ola" and sent == ["http://127.0.0.1:3910/v1/audio/transcriptions"]
+
+
+def test_speech_recognition_falls_back_to_the_cpu_when_the_gpu_server_fails(monkeypatch, tmp_path):
+    wav = tmp_path / "f.wav"
+    wav.write_bytes(b"RIFF")
+    asked = []
+
+    class Reply:
+        def read(self): return b'{"text": " adiciona uma reuniao "}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def urlopen(request, timeout):
+        asked.append(request.full_url)
+        if request.full_url.startswith("http://gpu"):
+            raise agent.urllib.error.URLError("connection refused")
+        return Reply()
+
+    monkeypatch.setattr(agent, "STT_URL", "http://gpu:3910")
+    monkeypatch.setattr(agent, "VOICESTUDIO", "http://cpu:3900")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(agent, "voice_diagnostics", {"latency": {}})
+    assert agent.transcribe(wav) == "adiciona uma reuniao"
+    assert asked == ["http://gpu:3910/v1/audio/transcriptions", "http://cpu:3900/v1/audio/transcriptions"]
+    assert agent.voice_diagnostics["latency"]["stt_engine"] == "voicestudio"
+    monkeypatch.setattr(agent.urllib.request, "urlopen", lambda r, timeout: (_ for _ in ()).throw(agent.urllib.error.URLError("down")))
+    with pytest.raises(agent.urllib.error.URLError):
+        agent.transcribe(wav)  # both down: the turn reports it (never a made-up transcript)
+
+
+def test_warming_asks_the_server_first(monkeypatch):
+    opened = []
+    monkeypatch.setattr(agent, "call", lambda method, path, body=None: {"model": {"reachable": False, "paused": "memória"}})
+    monkeypatch.setattr(agent.urllib.request, "urlopen", lambda *a, **k: opened.append(a))
+    agent.warm_model()
+    assert opened == []

@@ -3,10 +3,16 @@ import type { Material, StudyMaterial } from '../lib/api'
 import { dayMonth } from '../lib/format'
 import { Badge, Empty, cx } from './ui'
 
-export const VAULT = 'Peace Vault'
+let vault = 'Peace Vault'
+/** The vault chosen in Settings (Layout loads it at start). shortcut: links already on screen keep the old name until they re-render. */
+export const setVaultName = (name: string) => void (vault = name)
 /** Scraped links are untrusted: only http(s) becomes a link (no file:, data: or custom app schemes). */
 export const safeHttp = (url: string | null | undefined) => (url && /^https?:\/\//i.test(url) ? url : undefined)
-export const obsidianHref = (path: string) => `obsidian://open?vault=${encodeURIComponent(VAULT)}&file=${encodeURIComponent(path)}`
+export const obsidianHref = (path: string) => `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(path)}`
+/** The vault and Obsidian are on the PC PEACE runs on: from any other device, files open in the browser. */
+export const onThisPc = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
+const vaultLink = (m: { id: number; vault_path: string }) =>
+  onThisPc ? { href: obsidianHref(m.vault_path) } : { href: `/api/v1/materials/${m.id}/file`, target: '_blank', rel: 'noreferrer noopener' }
 
 /** Files suggested for a study session: open the vault copy in Obsidian, or the original on the site. */
 export function StudyMaterials({ items, compact = false, className }: { items: StudyMaterial[]; compact?: boolean; className?: string }) {
@@ -17,8 +23,7 @@ export function StudyMaterials({ items, compact = false, className }: { items: S
         {items.map((m) => (
           <li key={m.id} className="min-w-0">
             <a
-              href={m.vault_path ? obsidianHref(m.vault_path) : safeHttp(m.url)}
-              {...(!m.vault_path && { target: '_blank', rel: 'noreferrer noopener' })}
+              {...(m.vault_path ? vaultLink({ id: m.id, vault_path: m.vault_path }) : { href: safeHttp(m.url), target: '_blank', rel: 'noreferrer noopener' })}
               title={m.why}
               className="inline-flex max-w-56 items-center gap-1 rounded-md border border-line bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted hover:border-accent/40 hover:text-accent"
             >
@@ -40,11 +45,11 @@ export function StudyMaterials({ items, compact = false, className }: { items: S
           </div>
           {m.vault_path && (
             <a
-              href={obsidianHref(m.vault_path)}
+              {...vaultLink({ id: m.id, vault_path: m.vault_path })}
               className="rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
-              aria-label={`Abrir ${m.title} no Obsidian`}
+              aria-label={`Abrir ${m.title}${onThisPc ? ' no Obsidian' : ''}`}
             >
-              Obsidian
+              {onThisPc ? 'Obsidian' : 'Abrir'}
             </a>
           )}
           {safeHttp(m.url) && (
@@ -64,11 +69,31 @@ export function StudyMaterials({ items, compact = false, className }: { items: S
   )
 }
 
+const isFresh = (m: Material, now: Date) => !!m.modified_at && now.getTime() - new Date(m.modified_at).getTime() < 7 * 86_400_000
+
+/** File type from the extension: a label and a hue for the gallery tile. */
+const TYPES: [RegExp, string, number][] = [
+  [/\.pdf$/i, 'PDF', 0],
+  [/\.(pptx?|odp|key)$/i, 'Slides', 25],
+  [/\.(xlsx?|ods|csv)$/i, 'Folha', 140],
+  [/\.(docx?|odt|rtf|txt|md)$/i, 'Texto', 215],
+  [/\.ggb$/i, 'GeoGebra', 265],
+  [/\.(zip|rar|7z|tar|gz)$/i, 'Arquivo', 40],
+  [/\.(png|jpe?g|gif|svg|webp)$/i, 'Imagem', 300],
+  [/\.(py|java|c|cpp|h|js|ts|ipynb|m|r|sql)$/i, 'Código', 180],
+]
+function fileType(m: Material): { label: string; hue: number | null } {
+  if (m.kind === 'link') return { label: 'Link', hue: null }
+  const name = m.filename ?? m.title
+  const hit = TYPES.find(([re]) => re.test(name))
+  return hit ? { label: hit[1], hue: hit[2] } : { label: name.split('.').pop()?.toUpperCase().slice(0, 6) || 'Ficheiro', hue: null }
+}
+
 const size = (bytes: number | null) =>
   bytes == null ? '' : bytes < 1_000_000 ? `${Math.max(1, Math.round(bytes / 1000))} KB` : `${(bytes / 1_000_000).toFixed(1).replace('.', ',')} MB`
 
 /** Course files and links grouped by section; `showCourse` prefixes each section with its course. */
-export function MaterialList({ items, now, showCourse = false }: { items: Material[]; now: Date; showCourse?: boolean }) {
+export function MaterialList({ items, now, showCourse = false, note = true }: { items: Material[]; now: Date; showCourse?: boolean; note?: boolean }) {
   if (!items.length)
     return <Empty icon={<FolderOpen className="size-5" />} title="Sem materiais">Aparecem aqui depois da sincronização.</Empty>
   const group = (m: Material) => (showCourse ? `${m.course?.name ?? 'Sem cadeira'} · ${m.section}` : m.section)
@@ -77,9 +102,11 @@ export function MaterialList({ items, now, showCourse = false }: { items: Materi
 
   return (
     <div className="grid gap-4">
-      <p className="text-xs text-faint">
-        Os ficheiros são copiados para o cofre em <span className="text-muted">02 - University/Courses/…/Materiais</span>.
-      </p>
+      {note && (
+        <p className="text-xs text-faint">
+          Os ficheiros são copiados para o cofre em <span className="text-muted">02 - University/Courses/…/Materiais</span>.
+        </p>
+      )}
       {sections.map((section) => (
         <section key={section}>
           <Heading className="mb-1 text-[11px] font-semibold tracking-wide text-faint uppercase">{section}</Heading>
@@ -87,7 +114,7 @@ export function MaterialList({ items, now, showCourse = false }: { items: Materi
             {items
               .filter((m) => group(m) === section)
               .map((m) => {
-                const fresh = m.modified_at && now.getTime() - new Date(m.modified_at).getTime() < 7 * 86_400_000
+                const fresh = isFresh(m, now)
                 return (
                   <li key={m.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-surface-2">
                     {m.kind === 'link' ? <Link2 className="size-4 shrink-0 text-faint" /> : <FileText className="size-4 shrink-0 text-faint" />}
@@ -102,11 +129,11 @@ export function MaterialList({ items, now, showCourse = false }: { items: Materi
                     {fresh && <Badge tone="accent">novo</Badge>}
                     {m.vault_path && (
                       <a
-                        href={obsidianHref(m.vault_path)}
+                        {...vaultLink({ id: m.id, vault_path: m.vault_path })}
                         className="rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
-                        aria-label={`Abrir ${m.title} no Obsidian`}
+                        aria-label={`Abrir ${m.title}${onThisPc ? ' no Obsidian' : ''}`}
                       >
-                        Obsidian
+                        {onThisPc ? 'Obsidian' : 'Abrir'}
                       </a>
                     )}
                     {safeHttp(m.url) && (
@@ -116,6 +143,69 @@ export function MaterialList({ items, now, showCourse = false }: { items: Materi
                         rel="noreferrer noopener"
                         aria-label={`Abrir ${m.title} ${m.kind === 'link' ? '' : 'no Moodle'}`}
                         className="grid size-7 place-items-center rounded-md text-muted hover:bg-surface-3 hover:text-text"
+                      >
+                        <ExternalLink className="size-3.5" />
+                      </a>
+                    )}
+                  </li>
+                )
+              })}
+          </ul>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+/** The same files as tiles, one grid per section: the type at a glance, the whole tile opens it. */
+export function MaterialGallery({ items, now }: { items: Material[]; now: Date }) {
+  if (!items.length)
+    return <Empty icon={<FolderOpen className="size-5" />} title="Sem materiais">Aparecem aqui depois da sincronização.</Empty>
+  const sections = [...new Set(items.map((m) => m.section))]
+  return (
+    <div className="grid gap-5">
+      {sections.map((section) => (
+        <section key={section}>
+          <h3 className="mb-2 text-[11px] font-semibold tracking-wide text-faint uppercase">{section}</h3>
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+            {items
+              .filter((m) => m.section === section)
+              .map((m) => {
+                const type = fileType(m)
+                const tint = type.hue == null ? 'var(--muted)' : `hsl(${type.hue} 70% 62%)`
+                const link = m.vault_path ? vaultLink({ id: m.id, vault_path: m.vault_path }) : { href: safeHttp(m.url), target: '_blank', rel: 'noreferrer noopener' }
+                return (
+                  <li key={m.id} className="group relative">
+                    <a
+                      {...link}
+                      title={m.filename ?? m.title}
+                      aria-label={`Abrir ${m.title}${m.vault_path && onThisPc ? ' no Obsidian' : ''}`}
+                      className="flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface-2 transition-colors hover:border-accent/50"
+                    >
+                      <div
+                        className="relative grid h-24 place-items-center"
+                        style={{ background: `color-mix(in oklab, ${tint} 14%, var(--surface))`, color: tint }}
+                      >
+                        {m.kind === 'link' ? <Link2 className="size-8" /> : <FileText className="size-8" />}
+                        <span className="absolute bottom-1.5 left-2 rounded px-1 text-[10px] font-semibold tracking-wide uppercase" style={{ background: `color-mix(in oklab, ${tint} 22%, transparent)` }}>
+                          {type.label}
+                        </span>
+                        {isFresh(m, now) && <Badge tone="accent" className="absolute top-1.5 right-1.5">novo</Badge>}
+                      </div>
+                      <div className="grid gap-0.5 p-2.5">
+                        <span className="line-clamp-2 text-[12.5px] leading-snug">{m.title}</span>
+                        {m.kind === 'file' && (
+                          <span className="num truncate text-[11px] text-faint">{[size(m.size), m.modified_at && dayMonth(m.modified_at)].filter(Boolean).join(' · ')}</span>
+                        )}
+                      </div>
+                    </a>
+                    {m.vault_path && safeHttp(m.url) && (
+                      <a
+                        href={safeHttp(m.url)}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        aria-label={`Abrir ${m.title} no Moodle`}
+                        className="absolute top-1.5 left-1.5 grid size-7 place-items-center rounded-md bg-surface/80 text-muted opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 hover:text-text"
                       >
                         <ExternalLink className="size-3.5" />
                       </a>

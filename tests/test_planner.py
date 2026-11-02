@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from peace.planner import PlanPrefs, assessment_targets, free_slots, plan_day, ranked, recommend, score, window
+from peace.planner import PlanPrefs, assessment_targets, free_slots, plan_day, ranked, recommend, remaining_minutes, score, window
 
 LX = ZoneInfo("Europe/Lisbon")
 PREFS = PlanPrefs()
@@ -68,6 +68,22 @@ def test_heavy_remaining_work_raises_score():
     heavy = task(2, due_at=NOW + timedelta(days=10), estimated_minutes=1800)
     assert score(heavy, NOW, PREFS)[0] > score(light, NOW, PREFS)[0]
     assert "muito trabalho para o tempo que resta" in score(heavy, NOW, PREFS)[1]
+
+
+def test_unestimated_project_phase_outranks_a_later_exam_and_signups_are_small():
+    phase = task(1, title="Submissao fase II", description="Relatório (pdf); Código.", estimated_minutes=None,
+                 due_at=NOW + timedelta(days=6))
+    signup = task(2, title="Inscrição para defesa", estimated_minutes=None, due_at=NOW + timedelta(days=6))
+    targets = assessment_targets([exam(9, 'Frequência', NOW + timedelta(days=9))], {}, PREFS)
+    order = [getattr(t, 'event_id', None) or t.id for t, _, _ in ranked([signup, *targets, phase], NOW, PREFS)]
+    assert order[0] == 1
+    assert any(r.startswith("trabalho grande") for r in score(phase, NOW, PREFS)[1])
+    assert recommend([signup], NOW, PREFS)['minutes'] == 15
+
+
+def test_effort_guess_ignores_words_that_only_start_like_big_work():
+    assert remaining_minutes(task(1, title="Rever metabolismo e metade da matéria", estimated_minutes=None), PREFS) == PREFS.default_task_minutes
+    assert remaining_minutes(task(1, title="Checkpoint 1", estimated_minutes=None), PREFS) == 600
 
 
 def test_progress_reduces_remaining_and_finished_work_is_not_ranked():

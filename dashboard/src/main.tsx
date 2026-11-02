@@ -16,6 +16,11 @@ import Home from './pages/Home'
 import Knowledge from './pages/Knowledge'
 import Login from './pages/Login'
 import Planner from './pages/Planner'
+import Review from './pages/Review'
+import Mail from './pages/Mail'
+import DeliveryPage from './pages/Delivery'
+import PastExamPage from './pages/PastExam'
+import PracticePage from './pages/Practice'
 import Settings from './pages/Settings'
 import Tasks from './pages/Tasks'
 
@@ -55,6 +60,11 @@ createRoot(document.getElementById('root')!).render(
             <Route path="cadeiras/:id" element={<Course />} />
             <Route path="conhecimento" element={<Knowledge />} />
             <Route path="atividade" element={<ActivityPage />} />
+            <Route path="rever" element={<Review />} />
+            <Route path="correio" element={<Mail />} />
+            <Route path="entregas/:id" element={<DeliveryPage />} />
+            <Route path="exames/:id" element={<PastExamPage />} />
+            <Route path="treino/:id" element={<PracticePage />} />
             <Route path="definicoes" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

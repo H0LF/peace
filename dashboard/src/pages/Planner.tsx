@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import { Badge, Button, Card, Dialog, Empty, ErrorNote, Field, Input, Menu, MenuItem, PageHeader, Progress, Skeleton, cx, useToast } from '../components/ui'
 import { StudyMaterials } from '../components/materials'
+import { StartButton, StudyTimeCard, TimerCard } from '../components/studytime'
 import { api, type StudySession } from '../lib/api'
 import { addDays, dayKey, dayMonth, duration, fromLocalInput, plural, sameDay, startOfDay, startOfWeek, time, toLocalInput } from '../lib/format'
 import { refreshAll, useApi, useNow } from '../lib/hooks'
@@ -91,6 +92,7 @@ function SessionRow({ s, now, onEdit }: { s: StudySession; now: Date; onEdit: (s
       {s.status === 'done' && <Badge tone="ok">feita</Badge>}
       {s.status === 'skipped' && <Badge>saltada</Badge>}
       {missed && <Badge tone="warn">por fazer</Badge>}
+      {s.status === 'planned' && !past && sameDay(new Date(s.starts_at), now) && <StartButton sessionId={s.id} />}
       {s.status === 'planned' && (
         <Button size="sm" variant="ghost" onClick={() => patch({ status: 'done' }, 'Sessão concluída')}>
           <Check className="size-3.5" /> Feita
@@ -184,6 +186,8 @@ export default function Planner() {
         }
       />
 
+      <TimerCard />
+
       {recommendation.data && (
         <Card className="mb-6" title="Recomendado agora">
           <p className="font-medium">{recommendation.data.title} · {recommendation.data.minutes} min</p>
@@ -213,6 +217,8 @@ export default function Planner() {
           {missed > 0 && <div className="mt-1 text-xs text-faint">«Planear hoje» volta a distribuir o trabalho.</div>}
         </Card>
       </div>
+
+      <StudyTimeCard />
 
       <div className="mb-4 flex items-center gap-2">
         <Button variant="secondary" size="icon" aria-label="Semana anterior" onClick={() => setWeekStart(addDays(weekStart, -7))}>

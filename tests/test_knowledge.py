@@ -143,17 +143,63 @@ def test_fetch_pending_caches_and_analyzes_moodle_files(session, tmp_path, monke
     assert library.fetch_pending(session, NOW) == 0  # up to date
 
 
-def test_inforestudante_is_not_downloaded_automatically_or_marked_consulted(session, tmp_path, monkeypatch):
+def test_inforestudante_files_are_downloaded_in_one_batch_and_failures_retried_later(session, tmp_path, monkeypatch):
     monkeypatch.setenv("PEACE_DATA_DIR", str(tmp_path))
-    m = Material(section="T", title="Sem data", kind="file", filename="a.txt", source="inforestudante",
-                 external_id="1:2:3", modified_at=None)
+    good = Material(section="T", title="Enunciado", kind="file", filename="a.txt", source="inforestudante",
+                    external_id="1:2:3", modified_at=None)
+    bad = Material(section="T", title="Sumiu", kind="file", filename="b.txt", source="inforestudante",
+                   external_id="1:2:4", modified_at=None)
+    session.add_all([good, bad])
+    session.commit()
+    calls = []
+
+    def download(wanted, max_bytes):
+        calls.append(sorted(wanted))
+        wanted["1:2:3"].write_text("entrega da meta 1 a 20 de novembro")
+        wanted["1:2:4"].write_text("partial")
+        return {"1:2:4": "não encontrado na listagem"}
+
+    monkeypatch.setattr(library.sync, "download_inforestudante", download)
+    monkeypatch.setattr(library.sync, "enabled_sources", lambda _s: ["inforestudante"])
+    assert library.fetch_pending(session, NOW) == 2
+    assert calls == [["1:2:3", "1:2:4"]]
+    session.refresh(good), session.refresh(bad)
+    assert "meta 1" in good.content and good.fetch_error is None
+    assert library.cached_file(good.id).is_file() and not library.cached_file(good.id).with_suffix(".part").exists()
+    assert bad.fetch_error == "não encontrado na listagem" and bad.content is None
+    assert not library.cached_file(bad.id).exists() and not library.cached_file(bad.id).with_suffix(".part").exists()
+    assert library.pending(session, NOW) == []  # not asked again until RETRY_AFTER
+    assert [m.id for m in library.pending(session, NOW + library.RETRY_AFTER + timedelta(hours=1))] == [bad.id]
+
+
+def test_inforestudante_login_failure_marks_the_batch_and_keeps_moodle_going(session, tmp_path, monkeypatch):
+    monkeypatch.setenv("PEACE_DATA_DIR", str(tmp_path))
+    m = Material(section="T", title="Enunciado", kind="file", filename="a.txt", source="inforestudante", external_id="1:2:3")
     session.add(m)
     session.commit()
-    assert library.pending(session, NOW) == []
-    assert library.fetch_pending(session, NOW) == 0
+
+    def refused(wanted, max_bytes):
+        raise library.sync.AuthError("bad password")
+
+    monkeypatch.setattr(library.sync, "download_inforestudante", refused)
+    monkeypatch.setattr(library.sync, "enabled_sources", lambda _s: ["inforestudante"])
+    library.fetch_pending(session, NOW)
     session.refresh(m)
-    assert m.fetched_at is None
-    assert not library.cached_file(m.id).exists()
+    assert "bad password" in m.fetch_error
+
+
+def test_a_pdf_opens_in_the_browser_and_other_files_download(client, session, tmp_path, monkeypatch):
+    monkeypatch.setenv("PEACE_DATA_DIR", str(tmp_path))
+    (tmp_path / "materials").mkdir()
+    pdf = Material(section="T", title="E", kind="file", filename="Enunciado.pdf", source="inforestudante", external_id="1:2:3")
+    page = Material(section="T", title="P", kind="file", filename="pagina.html", source="inforestudante", external_id="1:2:4")
+    session.add_all([pdf, page])
+    session.commit()
+    for m in (pdf, page):
+        library.cached_file(m.id).write_bytes(b"x")
+    r = client.get(f"/api/v1/materials/{pdf.id}/file")
+    assert r.headers["content-type"] == "application/pdf" and r.headers["content-disposition"].startswith("inline")
+    assert client.get(f"/api/v1/materials/{page.id}/file").headers["content-disposition"].startswith("attachment")
 
 
 def test_sessions_and_graph_api(client, session, library_data):
@@ -208,11 +254,17 @@ def test_desktop_mirrors_notes_and_respects_user_edits(tmp_path, monkeypatch):
     monkeypatch.setenv("PEACE_TOKEN", "test")
     monkeypatch.setattr(agent, "VAULT", vault)
     monkeypatch.setattr(agent, "STATE", tmp_path / "materials.json")
-    monkeypatch.setattr(agent, "call", lambda *a: [{"path": p, "sha256": hashlib.sha256(b).hexdigest()} for p, b in files.items()])
-    monkeypatch.setattr(agent.urllib.request, "urlopen",
-                        lambda req, timeout: Resp(files[agent.urllib.parse.unquote(req.full_url.split("path=")[1])]))
+    daily = {"2026-10-27.md": b"# Terca"}
+    deliveries = {"Bases de Dados/TP.md": b"# TP"}
+    listing = lambda d: [{"path": p, "sha256": hashlib.sha256(b).hexdigest()} for p, b in d.items()]  # noqa: E731
+    by_api = {"/notes": files, "/daily": daily, "/deliveries": deliveries}
+    monkeypatch.setattr(agent, "call", lambda method, path, body=None: listing(by_api["/" + path.rsplit("/", 1)[1]]))
+    monkeypatch.setattr(agent.urllib.request, "urlopen", lambda req, timeout: Resp(
+        {**files, **daily, **deliveries}[agent.urllib.parse.unquote(req.full_url.split("path=")[1])]))
     note = vault / "07 - Generated/Graphify/A.md"
-    assert agent.mirror_notes() == 1 and note.read_bytes() == b"# A v1"
+    assert agent.mirror_notes() == 3 and note.read_bytes() == b"# A v1"
+    assert (vault / "07 - Generated/Peace/Diário/2026-10-27.md").read_bytes() == b"# Terca"
+    assert (vault / "07 - Generated/Peace/Entregas/Bases de Dados/TP.md").read_bytes() == b"# TP"
     note.write_bytes(b"# A with my edits")
     files["A.md"] = b"# A v2"
     assert agent.mirror_notes() == 0 and note.read_bytes() == b"# A with my edits"
@@ -365,3 +417,21 @@ def test_exam_titles_keep_topical_acronyms(session):
     index = load_index(session)
     assert suggest_text(index, "BD (Teste de SQL)", bd.id, "exam")[0]["title"] == "Slides SQL"  # "SQL" kept, "BD" dropped
     assert suggest_text(index, "BD (Teste 1)", bd.id, "exam")[0]["title"] == "Exame 2024"  # nothing topical: exam material
+
+
+def test_daily_note_lists_the_day_and_is_rewritten_only_when_it_changes(session, monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from peace import journal
+    from peace.models import Event, Task
+
+    monkeypatch.setenv("PEACE_DATA_DIR", str(tmp_path))
+    tz, now = ZoneInfo("Europe/Lisbon"), datetime(2026, 10, 27, 8, 0, tzinfo=UTC)
+    session.add_all([Event(title="BD (Teste 1)", kind="exam", starts_at=now + timedelta(hours=8), ends_at=now + timedelta(hours=9, minutes=30), location="A1"),
+                     Task(title="Relatório de RC", due_at=now + timedelta(hours=15))])
+    session.commit()
+    assert journal.write_today(session, now, tz) and not journal.write_today(session, now, tz)
+    text = (tmp_path / "daily" / "2026-10-27.md").read_text(encoding="utf-8")
+    assert text.startswith("---\ndate: 2026-10-27") and "# Terça, 27 de outubro de 2026" in text
+    assert "16:00–17:30 **Avaliação:** BD (Teste 1) · A1" in text and "- [ ] 23:00 Relatório de RC" in text

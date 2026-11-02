@@ -1,0 +1,15 @@
+# Optional: speech recognition on the GPU with whisper.cpp (Vulkan works on AMD and NVIDIA), ~150 ms per
+# command instead of ~2.5 s on the CPU. Needs a whisper.cpp build with whisper-server and a ggml model; the desktop
+# agent uses it when desktop.env says PEACE_STT_URL=http://127.0.0.1:3910.
+[Unit]
+Description=PEACE speech recognition on the GPU (whisper.cpp)
+ConditionPathExists=%h/.local/share/whisper.cpp/build/bin/whisper-server
+ConditionPathExists=%h/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin
+
+[Service]
+ExecStart=%h/.local/share/whisper.cpp/build/bin/whisper-server -m %h/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin --host 127.0.0.1 --port 3910 -l pt --inference-path /v1/audio/transcriptions
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

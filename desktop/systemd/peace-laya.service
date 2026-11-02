@@ -1,0 +1,18 @@
+# Optional: Laya typed decisions on the CPU, loopback only. Installed by scripts/install-laya.sh.
+# The multilingual checkpoint because PEACE's text is Portuguese. It leaves memory after 10 idle minutes.
+[Unit]
+Description=PEACE typed decisions (Laya, CPU)
+
+[Service]
+Environment=LAYA_HOST=127.0.0.1
+Environment=LAYA_PORT=3920
+Environment=LAYA_DEVICE=cpu
+Environment=LAYA_MODELS=multilingual
+Environment=LAYA_DEFAULT_MODEL=multilingual
+Environment=LAYA_IDLE_UNLOAD_SECONDS=600
+ExecStart=%h/.local/share/peace/laya/bin/laya-serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -46,7 +46,7 @@ def health():
 
 
 @app.post("/v1/audio/transcriptions")
-def transcribe(file: UploadFile = File(...), language: str = Form("pt"), model: str = Form("")):
+def transcribe(file: UploadFile = File(...), language: str = Form("pt"), model: str = Form(""), prompt: str = Form("", max_length=500)):
     audio = file.file.read(MAX_AUDIO + 1)
     if len(audio) > MAX_AUDIO:
         raise HTTPException(413, "audio too long")
@@ -55,7 +55,8 @@ def transcribe(file: UploadFile = File(...), language: str = Form("pt"), model: 
     except (wave.Error, EOFError) as e:
         raise HTTPException(415, "send 16-bit PCM WAV") from e
     with _lock:
-        segments, _info = _whisper().transcribe(samples, language=language[:2] or None, vad_filter=True)
+        segments, _info = _whisper().transcribe(samples, language=language[:2] or None, vad_filter=True,
+                                                 initial_prompt=prompt or None)
         text = " ".join(s.text.strip() for s in segments).strip()
     return {"text": text}
 

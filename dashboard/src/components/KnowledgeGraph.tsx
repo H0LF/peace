@@ -1,6 +1,6 @@
 import ForceGraph3D, { type ForceGraph3DInstance } from '3d-force-graph'
 import { useEffect, useRef, useState } from 'react'
-import { Color, Vector2 } from 'three'
+import { Color, Spherical, Vector2, Vector3 } from 'three'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import type { GraphLink, GraphNode } from '../lib/api'
@@ -81,6 +81,34 @@ export default function KnowledgeGraph({
     composer.addPass(output) // linear -> sRGB, so colours match the rest of the page
     graph.current = g
 
+    // Holo Hands: a pinch-drag orbits, an opening hand zooms, the peace sign frames everything again.
+    const orbit = (e: Event) => {
+      const { dx, dy } = (e as CustomEvent<{ dx: number; dy: number }>).detail
+      const controls = g.controls() as { target: Vector3; update: () => void }
+      const offset = g.camera().position.clone().sub(controls.target)
+      const s = new Spherical().setFromVector3(offset)
+      s.theta -= dx * Math.PI * 2
+      s.phi = Math.min(Math.PI - 0.05, Math.max(0.05, s.phi - dy * Math.PI))
+      g.camera().position.copy(controls.target.clone().add(new Vector3().setFromSpherical(s)))
+      g.camera().lookAt(controls.target)
+      controls.update()
+    }
+    const zoom = (e: Event) => {
+      const { factor } = (e as CustomEvent<{ factor: number }>).detail
+      const controls = g.controls() as { target: Vector3; update: () => void }
+      const offset = g.camera().position.clone().sub(controls.target)
+      const length = Math.min(8000, Math.max(30, offset.length() / Math.min(1.5, Math.max(0.67, factor))))
+      g.camera().position.copy(controls.target.clone().add(offset.setLength(length)))
+      controls.update()
+    }
+    const reset = (e: Event) => {
+      e.preventDefault()
+      g.zoomToFit(reduced ? 0 : 600, 30)
+    }
+    window.addEventListener('peace:orbit', orbit)
+    window.addEventListener('peace:zoom', zoom)
+    window.addEventListener('peace:reset', reset)
+
     const ro = new ResizeObserver(() => {
       if (el.clientWidth && el.clientHeight) g.width(el.clientWidth).height(el.clientHeight)
     })
@@ -100,6 +128,9 @@ export default function KnowledgeGraph({
       ro.disconnect()
       io.disconnect()
       document.removeEventListener('visibilitychange', visibility)
+      window.removeEventListener('peace:orbit', orbit)
+      window.removeEventListener('peace:zoom', zoom)
+      window.removeEventListener('peace:reset', reset)
       bloom.dispose() // the composer does not dispose passes it was given
       output.dispose()
       g.renderer().forceContextLoss()
@@ -165,7 +196,7 @@ export default function KnowledgeGraph({
   }, [selected, links, accent, theme])
 
   return (
-    <div ref={host} className="holo-canvas absolute inset-0" data-testid="knowledge-graph">
+    <div ref={host} className="holo-canvas absolute inset-0" data-testid="knowledge-graph" data-holo-graph>
       {failed && <p className="p-6 text-[13px] text-muted">Este navegador não consegue desenhar o grafo 3D (WebGL indisponível). Usa a pesquisa e a lista ao lado.</p>}
     </div>
   )

@@ -11,7 +11,7 @@ from peace.sources import AuthError
 from peace.sources.inforestudante import LISBON
 from peace.sources.inforestudante import Snapshot as IRSnap
 from peace.sources.moodle import Snapshot as MSnap
-from peace.sync import AlreadyRunning, run_sync, source_lock
+from peace.sync import AlreadyRunning, drop_course, run_sync, source_lock
 from peace.worker import is_due, last_slot, next_slot
 
 NOW = datetime(2026, 10, 26, 13, 0, tzinfo=UTC)
@@ -87,6 +87,46 @@ def test_moodle_maps_courses_by_code_or_name_and_tracks_submission(session):
     sync("moodle", m_snap(submitted=NOW))
     session.refresh(task)
     assert (task.status, task.progress, task.priority) == ("COMPLETED", 100, 4)
+
+
+def test_dropped_course_is_forgotten_and_never_imported_again(session):
+    sync("inforestudante", ir_snap())
+    sync("moodle", m_snap())
+    course = session.query(Course).filter_by(name="Base de Dados").one()
+    task_id = session.query(Task).one().id
+    drop_course(session, course)
+    session.commit()
+    assert session.query(Task).count() == 0
+    assert session.query(Change).filter_by(entity="task", entity_id=task_id).count() == 0
+    sync("inforestudante", ir_snap())
+    sync("moodle", m_snap())
+    assert session.query(Course).filter_by(name="Base de Dados").count() == 0
+    assert session.query(Task).count() == 0
+    assert session.query(Course).filter_by(code="60000001").count() == 1  # the others still sync
+
+
+def delivery_event(day=7, code="60000001", n=9):
+    due = NOW + timedelta(days=day)
+    return {"external_id": f"entregas_trabalhos:{n}", "kind": "delivery", "title": "AM1 (Entrega)", "starts_at": due,
+            "ends_at": due, "location": None, "course_code": code}
+
+
+def test_timetable_delivery_becomes_one_task_and_moodle_replaces_it(session):
+    defence = {"external_id": "defesas_trabalhos:1", "kind": "appointment", "title": "AM1 (Defesa de Trabalhos)",
+               "starts_at": NOW + timedelta(days=8), "ends_at": NOW + timedelta(days=8, hours=1), "location": "L1",
+               "course_code": "60000001"}
+    sync("inforestudante", ir_snap(events=[delivery_event(), defence]))
+    task = session.query(Task).one()
+    assert (task.title, task.kind, task.course.code) == ("AM1 (Entrega)", "assignment", "60000001")
+    assert session.query(Event).one().kind == "appointment"
+    sync("inforestudante", ir_snap(events=[delivery_event(), defence]))
+    assert session.query(Task).count() == 1
+    snap = m_snap(due=NOW + timedelta(days=7, minutes=4))
+    snap.tasks[0]["moodle_course"] = 25906
+    sync("moodle", snap)
+    assert [t.source for t in session.query(Task)] == ["moodle"]
+    sync("inforestudante", ir_snap(events=[delivery_event(), defence]))
+    assert [t.source for t in session.query(Task)] == ["moodle"]
 
 
 def test_course_first_seen_on_moodle_is_adopted_not_duplicated(session):
@@ -241,3 +281,28 @@ def test_settings_switch_off_a_source_and_keep_passwords_write_only(client, monk
 def test_a_pasted_page_address_becomes_the_site_address(source, pasted, base):
     from peace.sync import site_address
     assert site_address(source, pasted) == base
+
+
+def _post(did, subject, forum="news", course=25929):
+    return {"external_id": did, "moodle_course": course, "forum": forum, "subject": subject, "excerpt": "texto",
+            "author": "Docente", "created": NOW.isoformat(), "url": f"https://moodle.example.pt/moodle/mod/forum/discuss.php?d={did}"}
+
+
+def test_announcements_are_news_once_and_a_failed_read_keeps_them(session):
+    from peace.notifications import important_change
+
+    sync("inforestudante", ir_snap())
+    snap = m_snap()
+    snap.posts = [_post(1, "Bem-vindos")]
+    sync("moodle", snap)  # the first read of the forums is not news
+    first = session.query(Change).filter_by(entity="announcement").one()
+    assert first.seen_at is not None and first.summary == "Aviso de Base de Dados: Bem-vindos"
+    snap.posts = [_post(1, "Bem-vindos"), _post(2, "Aula de quinta cancelada"), _post(3, "Dúvida", forum="forum")]
+    sync("moodle", snap)
+    sync("moodle", snap)  # the same posts again: nothing new
+    new = session.query(Change).filter_by(entity="announcement").filter(Change.seen_at.is_(None)).order_by(Change.id).all()
+    assert [c.summary for c in new] == ["Aviso de Base de Dados: Aula de quinta cancelada", "Fórum de Base de Dados: Dúvida"]
+    assert [important_change(session, c, NOW) for c in new] == [True, False]  # a teacher's announcement is urgent
+    snap.posts = None  # forums unreadable this time
+    assert sync("moodle", snap).status == "success"
+    assert session.query(Change).filter_by(entity="announcement").count() == 3

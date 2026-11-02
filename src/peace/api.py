@@ -10,11 +10,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from peace.auth import SESSION_COOKIE, _same, require_token, session_value
+from peace.auth import _same, require_token, session_cookie, start_session
 from peace.config import get_settings
 from peace.db import get_session
 from peace.logs import configure_logging
-from peace import assistant, desktop
+from peace import assistant, decisions, desktop, diagnostics, exams, google, google_calendar, mail, mastery, phone, practice, proposals, requirements, speech, workload, studytime
 from peace.routes import router
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,20 @@ app = FastAPI(title="PEACE")
 app.include_router(router)
 app.include_router(assistant.router)
 app.include_router(desktop.router)
+app.include_router(phone.router)
+app.include_router(diagnostics.router)
+app.include_router(google.router)
+app.include_router(google_calendar.router)
+app.include_router(proposals.router)
+app.include_router(studytime.router)
+app.include_router(mail.router)
+app.include_router(requirements.router)
+app.include_router(mastery.router)
+app.include_router(exams.router)
+app.include_router(practice.router)
+app.include_router(workload.router)
+app.include_router(speech.router)
+app.include_router(decisions.router)
 
 
 @app.get("/health")
@@ -46,21 +60,14 @@ def login(body: LoginIn, request: Request):
     if not _same(body.token, expected):
         raise HTTPException(401, "Token inválido")
     response = Response(status_code=204)
-    response.set_cookie(
-        SESSION_COOKIE,
-        session_value(expected),
-        max_age=60 * 60 * 24 * 30,
-        httponly=True,
-        samesite="strict",
-        secure=request.url.scheme == "https",
-    )
+    start_session(response, request)
     return response
 
 
 @app.post("/auth/logout", status_code=204)
 def logout():
     response = Response(status_code=204)
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(session_cookie())
     return response
 
 

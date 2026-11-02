@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from peace import sync
 from peace.knowledge import load_index, suggest, suggest_text
-from peace.models import OPEN_STATUSES, Change, Event, Notification, Preference, StudySession, Task
+from peace.models import OPEN_STATUSES, Change, Event, Notification, Preference, Proposal, StudyLog, StudySession, Task
 from peace.planner import PlanPrefs
 
 
@@ -124,7 +124,10 @@ def _end_of_day(day: date, tz: ZoneInfo) -> datetime:
 
 
 def important_change(session: Session, change: Change, now: datetime) -> bool:
-    """Prioritize changed imminent assessments/deadlines, including a date moved away."""
+    """Prioritize changed imminent assessments/deadlines, including a date moved away, and teachers' announcements
+    (a class cancelled or moved is announced there)."""
+    if change.entity == "announcement":
+        return (change.detail or {}).get("forum") == "news"
     if change.entity == "event":
         row = session.get(Event, change.entity_id) if change.entity_id else None
         if not row or row.kind != "exam":
@@ -171,7 +174,35 @@ def briefing_text(session: Session, now: datetime, tz: ZoneInfo) -> str:
     from peace.academic import recommendation
     if rec := recommendation(session, now, planner_prefs(session), tz):
         lines.append(rec["text"])
+    from peace.proposals import RECOVER
+    if options := session.scalar(select(func.count()).select_from(Proposal).where(
+            Proposal.kind.in_(RECOVER), Proposal.status == "pending")):
+        lines.append(f"Ficou estudo por fazer: há {_plural(options, 'maneira', 'maneiras')} de recuperar em Rever.")
     return " ".join(lines)
+
+
+WORKER_SILENT = timedelta(minutes=15)  # it ticks every minute
+
+
+def worker_alive(session: Session, now: datetime) -> None:
+    """Called by the worker on every tick."""
+    row = session.get(Preference, "worker")
+    if row:
+        row.value = {"seen_at": now.isoformat()}
+    else:
+        session.add(Preference(key="worker", value={"seen_at": now.isoformat()}))
+
+
+def check_worker(session: Session, now: datetime, tz: ZoneInfo) -> bool:
+    """The worker makes every other reminder, so it cannot report its own silence: the API does (once an hour)."""
+    row = session.get(Preference, "worker")
+    if not row or now - datetime.fromisoformat(row.value["seen_at"]) < WORKER_SILENT:
+        return False
+    local = now.astimezone(tz)
+    return _add(session, key=f"worker:{local:%Y-%m-%dT%H}", kind="integration", title="A PEACE parou de sincronizar",
+                body="O serviço de fundo (sincronização, lembretes e análise de ficheiros) não está a correr. "
+                     "Reiniciar o PC costuma resolver.",
+                url="/definicoes", actions=["open"], urgent=True, deliver_after=now, expires_at=now + timedelta(hours=1))
 
 
 def generate(session: Session, now: datetime, tz: ZoneInfo) -> int:
@@ -243,6 +274,20 @@ def generate(session: Session, now: datetime, tz: ZoneInfo) -> int:
                 task_id=s.task_id,
                 expires_at=s.ends_at,
             )
+        # A timer left running (peace.studytime.FORGOTTEN): ask once per stretch, never count the time silently.
+        run = session.scalar(select(StudyLog).where(StudyLog.ended_at.is_(None), StudyLog.started_at <= now - timedelta(hours=3)))
+        if run:
+            what = run.task.title if run.task else run.course.name if run.course else "estudo"
+            made += _add(
+                session,
+                key=f"timer:{run.id}:forgotten",
+                kind="session",
+                title="O cronómetro ainda está a contar",
+                body=f"Há mais de 3 h em «{what}». Se já paraste, termina-o e diz a que horas paraste.",
+                url="/estudo",
+                actions=["open"],
+                expires_at=now + timedelta(hours=12),
+            )
 
     if prefs.changes:
         # "changes:<last change id>" keys record how far change notifications have got.
@@ -254,6 +299,10 @@ def generate(session: Session, now: datetime, tz: ZoneInfo) -> int:
         if fresh:
             lines = [c.summary for c in fresh[:3]] + ([f"+{len(fresh) - 3} outras"] if len(fresh) > 3 else [])
             plans = sum(c.source == "planner" and c.entity == "plan" for c in fresh)
+            review = session.scalar(select(func.count()).select_from(Proposal).where(
+                Proposal.status == "pending", Proposal.change_id.in_([c.id for c in fresh])))
+            if review:
+                lines.append(f"{review} sugest{'ão' if review == 1 else 'ões'} para rever")
             made += _add(
                 session,
                 key=f"changes:{fresh[-1].id}",
@@ -261,7 +310,7 @@ def generate(session: Session, now: datetime, tz: ZoneInfo) -> int:
                 title="Plano de estudo atualizado" if plans == len(fresh) else "Alterações no plano e nas cadeiras" if plans
                 else "Novidades nos sites" if len(fresh) > 1 else "Novidade nos sites",
                 body="\n".join(lines),
-                url="/atividade",
+                url="/rever" if review else "/atividade",
                 actions=["open"],
                 urgent=any(important_change(session, c, now) for c in fresh),
                 expires_at=now + timedelta(days=2),
@@ -289,20 +338,26 @@ def generate(session: Session, now: datetime, tz: ZoneInfo) -> int:
 
     if prefs.integrations:
         for health in sync.status(session, now, next_run=now):  # next_run is not used here
-            if health["needs_login"] or (health["stale"] and health["last_status"] is not None):
+            failed = health["last_status"] == "failed"
+            if health["needs_login"] or failed or (health["stale"] and health["last_status"] is not None):
                 name = {"inforestudante": "Inforestudante", "moodle": "Moodle"}.get(health["source"], health["source"])
                 made += _add(
                     session,
                     key=f"sync:{health['source']}:{today}",
                     kind="integration",
                     title=f"{name}: sincronização com problemas",
-                    body="O login foi recusado. Verifica as credenciais." if health["needs_login"] else "Os dados podem estar desatualizados.",
+                    body="O login foi recusado. Atualiza a palavra-passe em Definições → Integrações." if health["needs_login"]
+                    else "A última sincronização falhou (site em baixo ou sem rede). A PEACE tenta outra vez sozinha." if failed
+                    else "Os dados podem estar desatualizados.",
                     url="/definicoes",
                     actions=["open"],
                     expires_at=_end_of_day(today, tz),
                 )
 
     if now.astimezone(tz).time() >= prefs.briefing_at:
+        if not session.scalar(select(Notification.id).where(Notification.key == f"briefing:{today}")):
+            from peace.proposals import offer_recovery  # it imports this module
+            offer_recovery(session, now)
         made += _add(
             session,
             key=f"briefing:{today}",

@@ -53,11 +53,16 @@ DESKTOP: dict[str, tuple[str, str, dict[str, dict]]] = {
     "apply_layout": ("layouts.apply", "Arrumar as janelas com uma disposição guardada (ex.: estudo, programacao).", {"name": _text}),
     "save_layout": ("layouts.save", "Guardar as janelas da área de trabalho atual como disposição.", {"name": _text}),
     "undo_layout": ("layouts.undo", "Repor as janelas como estavam antes da última disposição.", {}),
+    "search_notes": ("notes.search", "Procurar texto nas notas do utilizador no Obsidian (as notas dele, não os materiais "
+                     "das cadeiras).", {"query": _text}),
     "find_tabs": ("browser.tabs", "Procurar separadores abertos no Brave.", {"query": _text}),
     "open_tab": ("browser.open", "Abrir um endereço web (http/https) no Brave.", {"url": _text}),
     "focus_tab": ("browser.focus", "Mostrar um separador aberto do Brave.", {"query": _text}),
     "group_tabs": ("browser.group", "Agrupar separadores do Brave sob um nome.", {"query": _text, "title": _text}),
     "close_tabs": ("browser.close", "Fechar separadores do Brave (pede confirmação).", {"query": _text}),
+    "organize_tabs": ("browser.organize", "Arrumar os separadores do Brave: agrupar os de cada site.", {}),
+    "gather_windows": ("windows.gather", "Mover todas as janelas abertas de uma disposição (programacao: editor e terminal; "
+                       "estudo: Obsidian e browser) para uma área de trabalho, sem abrir nada.", {"name": _text, "workspace": _int}),
 }
 # Agent tools that can lose work whatever their arguments; the agent also refuses them without confirmation.
 DESTRUCTIVE_TOOLS = {"files.trash", "windows.close", "browser.close"}

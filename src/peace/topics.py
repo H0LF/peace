@@ -14,12 +14,12 @@ import httpx
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from peace.llm import current_model, LLM_OPTIONS, _llm, llm_reachable, mark_unreachable
+from peace.llm import KEEP_ALIVE, current_model, LLM_OPTIONS, _llm, llm_reachable, mark_unreachable
 from peace.models import Material
 
 log = logging.getLogger(__name__)
 KINDS = ("slides", "exercises", "past_exam", "statement", "solutions", "admin", "other")
-MAX_CHARS = 9000  # the beginning says what a document is; ~3k tokens keeps a file at 1-3 s on the GPU
+MAX_CHARS = 9000  # ~3k tokens keeps a file at 1-3 s on the GPU
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -29,7 +29,7 @@ SCHEMA = {
     "required": ["topics", "doc_kind"],
 }
 PROMPT = (
-    "Lê o início deste documento de uma cadeira universitária e responde só com JSON.\n"
+    "Lê estes excertos de um documento de uma cadeira universitária e responde só com JSON.\n"
     "topics: até 8 temas concretos de matéria que o documento cobre, em português de Portugal, curtos (2-4 palavras), "
     "sem nomes de pessoas, datas nem salas.\n"
     "doc_kind: slides (apresentação de aula teórica), exercises (ficha de exercícios ou aula prática), "
@@ -51,12 +51,20 @@ def pending(session: Session, limit: int) -> list[Material]:
     return list(session.scalars(query.order_by(Material.modified_at.desc().nulls_last()).limit(limit)))
 
 
+def excerpts(text: str, limit: int = MAX_CHARS) -> str:
+    """Beginning, middle and end: a course's slides change subject as they go, so the start alone misses topics."""
+    if len(text) <= limit:
+        return text
+    size, step = limit // 3, (len(text) - limit // 3) // 2
+    return "\n[...]\n".join(text[i:i + size] for i in (0, step, 2 * step))
+
+
 def read_topics(m: Material) -> tuple[list[str], str] | None:
     """Ask the model; None when it is unreachable or answers outside the schema."""
-    prompt = PROMPT.format(name=m.filename or m.title, course=m.course.name if m.course else "?", text=m.content[:MAX_CHARS])
+    prompt = PROMPT.format(name=m.filename or m.title, course=m.course.name if m.course else "?", text=excerpts(m.content))
     try:
         r = _llm("POST", "/api/chat", timeout=120, json={
-            "model": current_model(), "stream": False, "think": "low", "format": SCHEMA, "keep_alive": "10m",
+            "model": current_model(), "stream": False, "think": "low", "format": SCHEMA, "keep_alive": KEEP_ALIVE,
             "options": LLM_OPTIONS, "messages": [{"role": "user", "content": prompt}],
         })
         r.raise_for_status()

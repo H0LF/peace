@@ -115,3 +115,26 @@ def test_group_copies_merge_when_group_unknown_and_singletons_untouched():
     assert merged["url"] == "https://moodle.example.pt/moodle/course/view.php?id=7"
     assert next(t for t in kept if t["external_id"] == "assign:9")["title"] == "Relatório P1"
     assert len(kept) == 2
+
+
+def test_moodle_forum_posts_are_recent_plain_text_and_keyed_by_discussion():
+    now = datetime(2026, 10, 27, tzinfo=UTC)
+    forum = {"id": 9, "course": 25929, "type": "news"}
+    discussions = [
+        {"id": 50, "discussion": 41, "subject": " Aula cancelada ", "message": "<p>A aula de <b>quinta</b> &amp; a de sexta</p>",
+         "userfullname": "Docente", "created": int((now - timedelta(days=1)).timestamp())},
+        {"id": 51, "discussion": 42, "subject": "Antigo", "message": "x", "created": int((now - timedelta(days=60)).timestamp())},
+    ]
+    [post] = md.parse_posts(forum, discussions, now)
+    assert (post["external_id"], post["forum"], post["subject"], post["excerpt"]) == (41, "news", "Aula cancelada", "A aula de quinta & a de sexta")
+    assert post["url"].endswith("/mod/forum/discuss.php?d=41")
+
+
+def test_moodle_forums_that_cannot_be_read_give_unknown_not_empty():
+    from peace.sources import SourceError
+
+    class Refusing(md.Moodle):
+        def call(self, function, **params):
+            raise SourceError("moodle mod_forum_get_forums_by_courses: accessexception")
+
+    assert Refusing("u", "p").posts([1, 2], datetime(2026, 10, 27, tzinfo=UTC)) is None

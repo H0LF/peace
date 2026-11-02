@@ -22,6 +22,7 @@ RUN uv sync --frozen --no-dev
 # The 02:00 schedule and Lisbon timetable need tz data in the image: fail the build if missing.
 RUN python -c "from zoneinfo import ZoneInfo; ZoneInfo('Europe/Lisbon')"
 USER peace
+ENV PEACE_HOST=0.0.0.0
 EXPOSE 8420
 CMD ["sh", "-c", "alembic upgrade head && exec peace-api"]
 

@@ -1,6 +1,8 @@
 import { ArrowLeft, BookOpen, ExternalLink, GraduationCap, MapPin } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
+import { ConceptsCard } from '../components/concepts'
+import { PastExamsCard, PracticeCard } from '../components/exams'
 import { MaterialList } from '../components/materials'
 import { TaskDialog, TaskRow } from '../components/tasks'
 import { Badge, Card, Empty, ErrorNote, Progress, Skeleton, courseColor } from '../components/ui'
@@ -97,6 +99,9 @@ export default function Course() {
               </details>
             )}
           </Card>
+          <ConceptsCard courseId={id} />
+          <PracticeCard courseId={id} />
+          <PastExamsCard courseId={id} />
           <Card title="Materiais" action={materials.length > 0 && <Badge>{materials.filter((m) => m.kind === 'file').length} ficheiros</Badge>}>
             <MaterialList items={materials} now={now} />
           </Card>

@@ -24,10 +24,16 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Callable
 
 HOME = Path.home()
-VAULT = Path(os.environ.get("PEACE_VAULT", "~/Peace Vault")).expanduser()
+VAULT = Path(os.environ.get("PEACE_VAULT", "~/Peace Vault")).expanduser()  # the desktop agent follows Settings
+OBSIDIAN_CONFIGS = [p for p in (
+    Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "obsidian" / "obsidian.json",
+    HOME / ".var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json",  # Flatpak
+    Path(os.environ["APPDATA"]) / "obsidian" / "obsidian.json" if os.environ.get("APPDATA") else None,  # Windows
+) if p]
 STATE_DIR = Path(os.environ.get("PEACE_STATE", "~/.local/state/peace/materials.json")).expanduser().parent
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "peace"
 LAYOUTS_DIR = CONFIG_DIR / "layouts"
@@ -147,6 +153,21 @@ def done(message: str, verified: bool = True, **data: Any) -> dict:
 
 
 # --- files ----------------------------------------------------------------------------------------------
+
+def obsidian_vaults() -> list[dict]:
+    """Vaults Obsidian knows on this PC (native, Flatpak or Windows install) that still exist, by name."""
+    found: dict[str, str] = {}
+    for config in OBSIDIAN_CONFIGS:
+        try:
+            vaults = json.loads(config.read_text(encoding="utf-8")).get("vaults")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for v in vaults.values() if isinstance(vaults, dict) else []:
+            path = v.get("path") if isinstance(v, dict) else None
+            if isinstance(path, str) and Path(path).is_dir():
+                found[str(Path(path).resolve())] = Path(path).name
+    return [{"name": n, "path": p} for p, n in sorted(found.items(), key=lambda kv: (kv[1].lower(), kv[0]))][:20]
+
 
 def file_roots() -> dict[str, Path]:
     """Folders file tools may touch. PEACE_FILE_ROOTS="name=/path:name2=~/path" (";" on Windows) replaces the defaults."""
@@ -317,9 +338,51 @@ def _new_window(before: list[dict] | None, match: Callable[[dict], bool], wait: 
         time.sleep(0.25)
 
 
+NOTE_LIMIT_BYTES = 2_000_000
+
+
+@tool("notes.search", "files", "Procurar texto nas notas do Obsidian (cofre), com um excerto de cada nota.",
+      {"query": _str(100, required=True), "limit": _int(1, 20)})
+def notes_search(query: str, limit: int = 8) -> dict:
+    """Notes whose text has every word of the query (no accents or case), best first; hidden folders skipped."""
+    words = [w for w in _fold(query).split() if len(w) > 1]
+    if not words:
+        raise ActionError("invalid_args", "Diz o que procurar nas notas.")
+    if not VAULT.is_dir():
+        raise ActionError("not_found", "Não encontrei o cofre do Obsidian.")
+    hits = []
+    for root, dirs, files in os.walk(VAULT):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]  # .obsidian, .trash, .git
+        for name in files:
+            path = Path(root, name)
+            # A symlink could point anywhere (~/.ssh): only real notes inside the vault are read.
+            if not name.endswith(".md") or name.startswith(".") or path.is_symlink() or path.stat().st_size > NOTE_LIMIT_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            folded = _fold(text)
+            if not all(w in folded for w in words):
+                continue
+            at = folded.find(words[0])
+            excerpt = " ".join(text[max(0, at - 80): at + 160].split())
+            hits.append({"note": str(path.relative_to(VAULT)), "title": path.stem, "excerpt": excerpt,
+                         "count": sum(folded.count(w) for w in words), "title_match": all(w in _fold(path.stem) for w in words)})
+    hits.sort(key=lambda h: (h["title_match"], h["count"]), reverse=True)
+    hits = hits[:limit]
+    if not hits:
+        return done(f"Não encontrei «{query}» nas tuas notas.", items=[])
+    listed = "; ".join(f"«{h['title']}»" for h in hits[:5])
+    return done(f"Encontrei {len(hits)} nota(s) com «{query}»: {listed}.", items=hits)
+
+
+RUNNABLE = {".desktop", ".sh", ".appimage", ".run", ".exe", ".bat", ".cmd", ".ps1", ".lnk", ".html", ".htm", ".svg", ".jar", ".py"}
+
+
 @tool("files.open", "files", "Abrir um ficheiro ou pasta autorizado na aplicação predefinida.", TARGET_ARGS)
 def files_open(path: str | None = None, root: str | None = None, query: str | None = None) -> dict:
     target = _target(path, root, query, unique=False)
+    if target.is_file() and (target.suffix.lower() in RUNNABLE or (not WINDOWS and os.access(target, os.X_OK))):
+        # Opening one runs it (a script, a launcher, a downloaded page with its scripts): never on a spoken request.
+        raise ActionError("refused", f"Não abro «{target.name}»: é um programa ou atalho. Abre-o tu, se confiares nele.")
     before = _windows_snapshot()
     opened = win32.shell_open(str(target)) if WINDOWS else not _spawn(["gio", "open", str(target)]).returncode
     if not opened:
@@ -775,6 +838,31 @@ def layouts_apply(name: str) -> dict:
     return done(message, verified=active and placed == len(steps), steps=steps)
 
 
+@tool("windows.gather", "windows", "Mover para uma área todas as janelas já abertas das aplicações de uma disposição "
+      "(ex.: programacao = editor e terminal); não abre nada; reversível com layouts.undo.",
+      {"name": _str(40, required=True, pattern=NAME.pattern), "workspace": WORKSPACE})
+def windows_gather(name: str, workspace: int) -> dict:
+    layout = load_layout(name)
+    matchers = []
+    for slot in layout["windows"]:
+        try:
+            matchers.append(_app_window(find_app(slot["app"])))
+        except ActionError:
+            pass  # not installed: none of its windows can be open
+    h = hyprland()
+    clients = [c for c in h.clients() if any(m(c) for m in matchers)]
+    if not clients:
+        raise ActionError("not_found", f"Não há janelas de «{name}» abertas.")
+    _save_undo([{"address": c["address"], "workspace": c["workspace"].get("id"), "floating": bool(c.get("floating")),
+                 "at": c.get("at"), "size": c.get("size")} for c in clients])
+    # move_to_workspace waits until the compositor reports the window there: a move is only counted when seen.
+    moved = [c for c in clients if c["workspace"].get("id") == workspace or move_to_workspace(h, c["address"], workspace)]
+    message = f"Movi {len(moved)} de {len(clients)} janela(s) de «{name}» para a área {workspace}."
+    if not moved:
+        raise ActionError("move_failed", message)
+    return done(message, verified=len(moved) == len(clients), items=[{"title": str(c.get("class", ""))[:60]} for c in clients])
+
+
 def _save_undo(snapshot: list[dict]) -> None:
     UNDO_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = UNDO_FILE.with_suffix(".tmp")
@@ -937,6 +1025,28 @@ def browser_move(query: str, index: int, window: int | None = None) -> dict:
     return done(f"Movi {len(ids)} separador(es).", verified=ok)
 
 
+def _site(url: str) -> str | None:
+    host = urlparse(url).hostname if url.startswith(("http://", "https://")) else None
+    return host.removeprefix("www.")[:40] if host else None
+
+
+@tool("browser.organize", "browser", "Arrumar os separadores do Brave: os de cada site (2 ou mais) num grupo com o nome do site.", {})
+def browser_organize() -> dict:
+    sites: dict[str, list[int]] = {}
+    for t in _tabs():
+        if not t.get("pinned") and (site := _site(str(t.get("url", "")))):
+            sites.setdefault(site, []).append(t["id"])
+    groups = {s: ids[:50] for s, ids in sites.items() if len(ids) >= 2}
+    if not groups:
+        return done("Os separadores já estão arrumados: nenhum site tem dois ou mais.", items=[])
+    for site, ids in groups.items():
+        browser("group", {"tabIds": ids, "title": site})
+    after = {t["id"]: t.get("groupId", -1) for t in _tabs()}
+    grouped = [s for s, ids in groups.items() if len({after.get(i) for i in ids}) == 1 and after.get(ids[0], -1) != -1]
+    return done(f"Agrupei os separadores de {len(grouped)} de {len(groups)} site(s): {', '.join(grouped) or 'nenhum'}.",
+                verified=len(grouped) == len(groups), items=[{"title": s, "tabs": len(ids)} for s, ids in groups.items()])
+
+
 @tool("browser.group", "browser", "Agrupar separadores do Brave sob um nome.", {"query": QUERY, "title": _str(40, required=True), "color": COLOR})
 def browser_group(query: str, title: str, color: str | None = None) -> dict:
     tabs = _matching(query)
@@ -971,7 +1081,8 @@ def audit(entry: dict) -> None:
         AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
         if AUDIT_FILE.exists() and AUDIT_FILE.stat().st_size > AUDIT_MAX_BYTES:
             lines = AUDIT_FILE.read_text().splitlines()
-            AUDIT_FILE.write_text("\n".join(lines[len(lines) // 2:]) + "\n")
+            AUDIT_FILE.with_suffix(".tmp").write_text("\n".join(lines[len(lines) // 2:]) + "\n")
+            os.replace(AUDIT_FILE.with_suffix(".tmp"), AUDIT_FILE)
         fd = os.open(AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a") as f:
             f.write(json.dumps(entry) + "\n")

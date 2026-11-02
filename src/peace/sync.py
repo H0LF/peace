@@ -11,22 +11,46 @@ import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import delete, exists, func, select, text
 from sqlalchemy.orm import Session
 
 from peace.changes import record_removal, upsert_from_source
+from peace.config import get_settings
 from peace.db import get_engine
 from peace.models import Change, Course, Event, Material, Preference, SyncRun, Task
+from peace.planner import SMALL_WORK
 from peace.sources import AuthError, SourceError, inforestudante, moodle
 
 log = logging.getLogger(__name__)
 SOURCES = ("inforestudante", "moodle")
 SOURCE_MODULES = {"inforestudante": inforestudante, "moodle": moodle}  # inforestudante first: it provides course codes and class groups
 STALE_AFTER = timedelta(hours=36)
+
+
+RUN_AT = time(2, 0)  # the daily sync, Europe/Lisbon by default (the worker runs it)
+
+
+def last_slot(now: datetime, tz: ZoneInfo) -> datetime:
+    local = now.astimezone(tz)
+    slot = datetime.combine(local.date(), RUN_AT, tz)
+    if slot > local:
+        slot = datetime.combine(local.date() - timedelta(days=1), RUN_AT, tz)
+    return slot.astimezone(UTC)
+
+
+def next_slot(now: datetime, tz: ZoneInfo) -> datetime:
+    local = now.astimezone(tz)
+    slot = datetime.combine(local.date(), RUN_AT, tz)
+    if slot <= local:
+        slot = datetime.combine(local.date() + timedelta(days=1), RUN_AT, tz)
+    return slot.astimezone(UTC)
 
 
 class AlreadyRunning(Exception):
@@ -81,6 +105,16 @@ def integrations(session: Session) -> dict[str, dict[str, Any]]:
     return out
 
 
+def mail_login(session: Session) -> dict[str, Any]:
+    """Settings → Integrações → Email (phase 4): the webmail address the student knows, the login, and cleanup options.
+    Stored with the other sites' logins; IMAP runs on the webmail's host."""
+    row = session.get(Preference, "integrations")
+    v = {"enabled": False, "url": "", "username": "", "password": "", "clean_junk": True, "quota_mb": None}
+    v |= (row.value if row else {}).get("email", {})
+    v["host"] = urlsplit(v["url"]).hostname or ""
+    return v
+
+
 def enabled_sources(session: Session) -> list[str]:
     return [src for src, v in integrations(session).items() if v["enabled"]]
 
@@ -105,6 +139,16 @@ def fetch_inforestudante(now: datetime) -> inforestudante.Snapshot:
         client.http.close()
 
 
+def download_inforestudante(wanted: dict[str, Path], max_bytes: int) -> dict[str, str]:
+    """Download files by external id into the given paths. Returns the errors, by external id."""
+    client = inforestudante.Inforestudante(*_credentials("inforestudante"))
+    try:
+        client.login()
+        return client.download_materials(wanted, max_bytes)
+    finally:
+        client.http.close()
+
+
 def fetch_moodle(now: datetime) -> moodle.Snapshot:
     client = moodle.Moodle(*_credentials("moodle"))
     try:
@@ -121,10 +165,48 @@ def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", plain).strip().lower()
 
 
+def dropped_courses(session: Session) -> set[str]:
+    row = session.get(Preference, "dropped_courses")
+    return set(row.value) if row else set()
+
+
+def drop_course(session: Session, course: Course) -> None:
+    """The student left this course but the sites still list it: forget its data and never import it again.
+    Files are removed by library.remove_orphans; the vault belongs to the desktop agent."""
+    name = _norm(course.name)
+    row = session.get(Preference, "dropped_courses") or session.merge(Preference(key="dropped_courses", value=[]))
+    row.value = sorted({*row.value, name})
+    for model, entity in ((Task, "task"), (Event, "event"), (Material, "material")):
+        ids = session.scalars(select(model.id).where(model.course_id == course.id)).all()
+        session.execute(delete(Change).where(Change.entity == entity, Change.entity_id.in_(ids)))
+        session.execute(delete(model).where(model.id.in_(ids)))
+    session.execute(delete(Change).where(Change.entity == "course", Change.entity_id == course.id))
+    session.delete(course)
+
+
+def _twin_delivery(session: Session, course_id: int | None, due: datetime, sources: tuple[str, ...]) -> Task | None:
+    """A task of this course due the same day: two sites naming one delivery (their times differ by minutes)."""
+    tz = ZoneInfo(get_settings().timezone)
+    rows = session.scalars(select(Task).where(Task.course_id == course_id, Task.source.in_(sources), Task.due_at.is_not(None)))
+    return next((t for t in rows if t.due_at.astimezone(tz).date() == due.astimezone(tz).date() and not SMALL_WORK.search(t.title)), None)
+
+
+def _apply_delivery(session: Session, e: dict[str, Any], course_id: int | None) -> Change | None:
+    """A delivery from the timetable becomes a task, unless Moodle or a read brief already has it."""
+    if _twin_delivery(session, course_id, e["starts_at"], ("moodle", "brief")):
+        return None
+    fields = {"title": e["title"], "kind": "assignment", "due_at": e["starts_at"], "course_id": course_id}
+    return upsert_from_source(session, Task, "inforestudante", e["external_id"], fields)
+
+
 def apply_inforestudante(session: Session, snap: inforestudante.Snapshot) -> list[Change | None]:
     source = "inforestudante"
     changes: list[Change | None] = []
+    dropped = dropped_courses(session)
+    gone = {c["code"] for c in snap.courses if _norm(c["name"]) in dropped}
     for c in snap.courses:
+        if c["code"] in gone:
+            continue
         if session.scalar(select(Course).filter_by(source=source, external_id=c["code"])) is None:
             # A course first seen on Moodle (e.g. inforestudante was down) becomes this one: no duplicates.
             twins = session.scalars(select(Course).where(Course.source == "moodle")).all()
@@ -138,6 +220,11 @@ def apply_inforestudante(session: Session, snap: inforestudante.Snapshot) -> lis
     course_ids = {c.code: c.id for c in session.scalars(select(Course).where(Course.code.is_not(None)))}
     seen = set()
     for e in snap.events:
+        if e["course_code"] in gone:
+            continue
+        if e["kind"] == "delivery":
+            changes.append(_apply_delivery(session, e, course_ids.get(e["course_code"])))
+            continue
         fields = {k: e[k] for k in ("kind", "title", "starts_at", "ends_at", "location")}
         fields["course_id"] = course_ids.get(e["course_code"])
         changes.append(upsert_from_source(session, Event, source, e["external_id"], fields, record_created=e["kind"] == "exam"))
@@ -158,7 +245,8 @@ def apply_inforestudante(session: Session, snap: inforestudante.Snapshot) -> lis
             changes.append(record_removal(session, source, event))
         session.delete(event)
     by_code = {c.code: c for c in session.scalars(select(Course).where(Course.code.is_not(None)))}
-    changes += apply_materials(session, source, snap.materials, lambda m: by_code.get(m["course_code"]))
+    materials = [m for m in snap.materials if m["course_code"] not in gone]
+    changes += apply_materials(session, source, materials, lambda m: by_code.get(m["course_code"]))
     return changes
 
 
@@ -169,7 +257,11 @@ def apply_moodle(session: Session, snap: moodle.Snapshot) -> list[Change | None]
     by_code = {c.code: c for c in known if c.code}
     by_name = {_norm(c.name): c for c in known}
     resolved: dict[int, Course] = {}
+    dropped = dropped_courses(session)
+    gone = {c["id"] for c in snap.courses if _norm(c["name"]) in dropped}
     for mc in snap.courses:
+        if mc["id"] in gone:
+            continue
         course = by_code.get(mc["code"]) or by_name.get(_norm(mc["name"]))
         if course is None:
             fields = {"name": mc["name"], "code": mc["code"], "url": mc["url"]}
@@ -180,9 +272,13 @@ def apply_moodle(session: Session, snap: moodle.Snapshot) -> list[Change | None]
         resolved[mc["id"]] = course
 
     groups = {mid: {g.strip() for g in (c.class_groups or "").split(",") if g.strip()} for mid, c in resolved.items()}
-    for t in moodle.collapse_group_copies(snap.tasks, groups):
+    for t in moodle.collapse_group_copies([t for t in snap.tasks if t["moodle_course"] not in gone], groups):
         course = resolved.get(t["moodle_course"])
         done = t["submitted_at"] is not None
+        if course and t["due_at"] and not SMALL_WORK.search(t["title"]) and (
+                twin := _twin_delivery(session, course.id, t["due_at"], ("inforestudante",))):
+            session.delete(twin)  # the timetable only knew the date; Moodle knows the rest, and whether it was submitted
+            session.flush()
         fields = {
             "title": t["title"],
             "description": t["description"],
@@ -197,8 +293,34 @@ def apply_moodle(session: Session, snap: moodle.Snapshot) -> list[Change | None]
         # Work that was already submitted when first seen is not news.
         changes.append(upsert_from_source(session, Task, source, t["external_id"], fields, record_created=not done))
 
-    changes += apply_materials(session, source, snap.materials, lambda m: resolved.get(m["moodle_course"]))
+    materials = [m for m in snap.materials if m["moodle_course"] not in gone]
+    changes += apply_materials(session, source, materials, lambda m: resolved.get(m["moodle_course"]))
+    posts = None if snap.posts is None else [p for p in snap.posts if p["moodle_course"] not in gone]
+    changes += apply_posts(session, source, posts, resolved)
     return changes
+
+
+def apply_posts(session: Session, source: str, posts: list[dict[str, Any]] | None, courses: dict[int, Course]) -> list[Change | None]:
+    """Each announcement or forum post becomes one news item, once (keyed by its discussion id). Posts are never
+    deleted here: a failed or partial read (posts None) changes nothing."""
+    if not posts:
+        return []
+    known = set(session.scalars(select(Change.entity_id).where(Change.source == source, Change.entity == "announcement")))
+    first = not known  # the first read of a course's forums is not news
+    out: list[Change | None] = []
+    for p in posts:
+        if p["external_id"] in known:
+            continue
+        known.add(p["external_id"])
+        course = courses.get(p["moodle_course"])
+        where = f" de {course.name}" if course else ""
+        change = Change(source=source, entity="announcement", entity_id=p["external_id"], kind="created",
+                        summary=(f"Aviso{where}: " if p["forum"] == "news" else f"Fórum{where}: ") + p["subject"],
+                        detail={k: p[k] for k in ("forum", "excerpt", "author", "created", "url")} | {"course_id": course.id if course else None},
+                        seen_at=datetime.now(UTC) if first else None)
+        session.add(change)
+        out.append(change)
+    return out
 
 
 def apply_materials(
@@ -302,6 +424,10 @@ def run_sync(
             if first:
                 for c in changes:
                     c.seen_at = now  # the initial import is not news
+            else:
+                from peace import proposals  # proposals imports the routes, which import this module
+
+                proposals.from_changes(session, changes, now)
             counts = {k: len(getattr(snap, k)) for k in ("courses", "events", "tasks", "materials") if hasattr(snap, k)}
             run.stats = {"items": counts, "changes": dict(Counter(c.kind for c in changes)), "skipped": getattr(snap, "skipped", {})}
             run.status = "success"
@@ -311,7 +437,7 @@ def run_sync(
         except Exception as e:
             session.rollback()
             log.exception("sync %s failed", source)
-            run.status, run.error = "failed", f"{type(e).__name__}: {e}"[:2000]
+            run.status, run.error = "failed", re.sub(r"(token=)[^&\s]+", r"\1***", f"{type(e).__name__}: {e}")[:2000]
         run.finished_at = datetime.now(UTC)
         session.commit()
         log.info("sync %s (%s): %s %s", source, trigger, run.status, run.stats or run.error)

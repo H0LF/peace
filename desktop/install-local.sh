@@ -49,7 +49,8 @@ fi
 # The units name the repository and PostgreSQL by path: point them at this checkout and these binaries.
 for unit in "$here"/systemd/local/peace-*.service "$here"/systemd/peace-desktop.service "$here"/systemd/peace-voice.service; do
   [ -f "$unit" ] || continue
-  sed -e "s|%h/peace/|$repo/|g" -e "s|/usr/bin/postgres |$pgbin/postgres |" "$unit" > "$units/$(basename "$unit")"
+  sed -e "s|%h/peace/|$repo/|g" -e "s|^WorkingDirectory=%h/peace$|WorkingDirectory=$repo|" \
+      -e "s|/usr/bin/postgres |$pgbin/postgres |" "$unit" > "$units/$(basename "$unit")"
   chmod 644 "$units/$(basename "$unit")"
 done
 install -m644 "$here/peace.desktop" ~/.local/share/applications/peace.desktop

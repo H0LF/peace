@@ -4,9 +4,10 @@ Tasks are ranked by explainable points (deadline, priority, remaining work, post
 then placed into free time inside the study window, around classes/exams and existing sessions.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Annotated, Any
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,11 @@ class PlanPrefs(BaseModel):
     max_task_minutes_per_day: int = Field(120, ge=15, le=480)
     default_task_minutes: int = Field(60, ge=15, le=600)
     default_exam_minutes: int = Field(120, ge=15, le=600)
+    # Accepted calibration per course id: how much longer than estimated this student's work takes (phase 2).
+    effort_factors: dict[int, Annotated[float, Field(ge=0.5, le=4)]] = Field(default_factory=dict)
+    # How far a recovery plan may stretch a day (phase 3), only when the student applies that option.
+    recovery_study_end: time = time(23, 0)
+    recovery_max_daily_minutes: int = Field(360, ge=15, le=720)
 
     @model_validator(mode="after")
     def _window_is_ordered(self):
@@ -37,7 +43,7 @@ class PlanPrefs(BaseModel):
 
 
 @dataclass(frozen=True)
-class Proposal:
+class Block:
     task_id: int | None
     course_id: int | None
     starts_at: datetime
@@ -50,17 +56,18 @@ class Proposal:
         return -self.event_id if self.event_id is not None else self.task_id
 
 
-def assessment_targets(events: list[Any], completed: dict[int, int], prefs: PlanPrefs) -> list[Any]:
-    """A policy preparation budget, not an estimate of readiness or assessment importance.
+def assessment_targets(events: list[Any], completed: dict[int, int], prefs: PlanPrefs,
+                       guides: dict[int, int] | None = None) -> list[Any]:
+    """The hours the exam's study guide asks for, or else a policy preparation budget.
 
     Negative internal IDs keep event and task allocation distinct. No synthetic tasks are persisted.
     """
     return [SimpleNamespace(
         id=-e.id, event_id=e.id, title=e.title, course_id=e.course_id, course=getattr(e, 'course', None),
         due_at=e.starts_at, kind='exam', priority=2, progress=0, postponed_count=0,
-        estimated_minutes=max(0, prefs.default_exam_minutes - completed.get(e.id, 0)),
+        estimated_minutes=max(0, (guides or {}).get(e.id, prefs.default_exam_minutes) - completed.get(e.id, 0)),
         description='', status='TODO',
-    ) for e in events if completed.get(e.id, 0) < prefs.default_exam_minutes]
+    ) for e in events if completed.get(e.id, 0) < (guides or {}).get(e.id, prefs.default_exam_minutes)]
 
 
 def _minutes(delta: timedelta) -> int:
@@ -71,8 +78,25 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+# shortcut: keyword guess of effort when the student gave no estimate; their own estimate always wins.
+BIG_WORK = re.compile(r"\b(fases?|metas?|checkpoints?|proj[ec]c?tos?|relat[oó]rios?|c[oó]digo|trabalhos? pr[aá]ticos?)\b", re.I)
+SMALL_WORK = re.compile(r"^\s*inscri[cç][aã]o\b", re.I)
+
+
+def guess_minutes(task: Any, prefs: PlanPrefs) -> int:
+    if task.estimated_minutes:
+        return task.estimated_minutes
+    if SMALL_WORK.search(task.title or ""):
+        return 15
+    if BIG_WORK.search(f"{task.title} {getattr(task, 'description', '') or ''}"):
+        return 600
+    return prefs.default_task_minutes
+
+
 def remaining_minutes(task: Any, prefs: PlanPrefs) -> int:
-    total = task.estimated_minutes or prefs.default_task_minutes
+    total = guess_minutes(task, prefs)
+    if not getattr(task, 'event_id', None):  # an assessment's budget is a policy, not an estimate
+        total *= prefs.effort_factors.get(task.course_id, 1.0)
     return round(total * (100 - (task.progress or 0)) / 100)
 
 
@@ -109,6 +133,11 @@ def score(task: Any, now: datetime, prefs: PlanPrefs) -> tuple[int, list[str]]:
         if hours > 0 and remaining_minutes(task, prefs) / 60 >= hours * 0.1:
             points += 15
             reasons.append("muito trabalho para o tempo que resta")
+        # Big work measured against study time left, not clock time: start days ahead, not the night before.
+        remaining = remaining_minutes(task, prefs)
+        if not assessment and hours >= 24 and remaining >= hours / 24 * prefs.max_daily_minutes * 0.25:
+            points += 40
+            reasons.append(f"trabalho grande (~{round(remaining / 60)} h): começar já")
     if task.postponed_count:
         points += 5 * min(task.postponed_count, 4)
         reasons.append(f"adiada {_plural(task.postponed_count, 'vez', 'vezes')}")
@@ -180,14 +209,14 @@ def plan_day(
     now: datetime,
     allocated: dict[int, int] | None = None,
     booked_minutes: int = 0,
-) -> list[Proposal]:
+) -> list[Block]:
     """Propose sessions for one day. `allocated` = minutes already planned per task on other days;
     `booked_minutes` = study minutes already on this day (kept sessions)."""
     allocated = allocated or {}
     slots = free_slots(day, tz, prefs, busy, now)
     budget = prefs.max_daily_minutes - booked_minutes
     day_start, _ = window(day, tz, prefs)
-    out: list[Proposal] = []
+    out: list[Block] = []
     ordered = ranked(tasks, max(now, day_start), prefs)
     exams = [t for t, _, _ in ordered if getattr(t, 'event_id', None)
              and remaining_minutes(t, prefs) > allocated.get(t.id, 0)
@@ -212,7 +241,7 @@ def plan_day(
                 break
             stop = start + timedelta(minutes=length)
             event_id = getattr(task, 'event_id', None)
-            out.append(Proposal(None if event_id else task.id, task.course_id, start, stop, ", ".join(reasons), event_id))
+            out.append(Block(None if event_id else task.id, task.course_id, start, stop, ", ".join(reasons), event_id))
             want -= length
             budget -= length
             nxt = stop + timedelta(minutes=prefs.break_minutes)

@@ -1,14 +1,16 @@
 """Shared academic candidates and recommendations for API, planner, assistant and briefing."""
 
-from datetime import datetime, time, timedelta
+from collections import defaultdict
+from collections.abc import Collection
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from peace import knowledge
-from peace.models import Event, PLANNABLE_STATUSES, StudySession, Task
-from peace.planner import PlanPrefs, assessment_targets, free_slots, ranked, recommend, remaining_minutes
+from peace.models import Event, PLANNABLE_STATUSES, StudyGuide, StudySession, Task
+from peace.planner import PlanPrefs, assessment_targets, free_slots, plan_day, ranked, recommend, remaining_minutes
 
 
 def valid_allocation(row: StudySession, now: datetime) -> bool:
@@ -27,13 +29,56 @@ def targets(session: Session, now: datetime, prefs: PlanPrefs):
     completed: dict[int, int] = {}
     for row in session.scalars(select(StudySession).where(StudySession.event_id.is_not(None), StudySession.status == 'done')):
         completed[row.event_id] = completed.get(row.event_id, 0) + int((row.ends_at - row.starts_at).total_seconds() // 60)
-    return [*tasks, *assessment_targets(events, completed, prefs)]
+    guides = {g.event_id: g.minutes for g in session.scalars(select(StudyGuide).where(StudyGuide.event_id.in_([e.id for e in events])))}
+    return [*tasks, *assessment_targets(events, completed, prefs, guides)]
 
 
-def materials(index: knowledge.Index, target):
+def _minutes(start: datetime, end: datetime) -> int:
+    return int((end - start).total_seconds() // 60)
+
+
+def allocated(session: Session, now: datetime) -> dict[int, int]:
+    """Minutes of future planned sessions per target (task id, or minus an event id) that still fit its date."""
+    out: dict[int, int] = defaultdict(int)
+    for row in session.scalars(select(StudySession).where(StudySession.status == "planned", StudySession.ends_at > now)):
+        target_id = -row.event_id if row.event_id else row.task_id
+        if target_id is not None and valid_allocation(row, now):
+            out[target_id] += _minutes(row.starts_at, row.ends_at)
+    return out
+
+
+def plan_sessions(session: Session, days: list[date], now: datetime, tz: ZoneInfo, prefs: PlanPrefs,
+                  only: Collection[int] | None = None) -> list[StudySession]:
+    """Add study sessions in the free time of `days` (not committed). `only`: plan just these targets
+    (task ids, or minus an assessment's event id), still around every other commitment."""
+    # Serialize planning with manual session creation so simultaneous requests cannot duplicate work.
+    session.execute(select(func.pg_advisory_xact_lock(842001)))
+    tasks = [t for t in targets(session, now, prefs) if only is None or t.id in only]
+    # Planning is additive: an existing commitment is never silently replaced.
+    planned = allocated(session, now)
+    created = []
+    for day in days:
+        start = datetime.combine(day, time(0), tz).astimezone(UTC)
+        end = datetime.combine(day + timedelta(days=1), time(0), tz).astimezone(UTC)
+        kept = session.scalars(select(StudySession).where(
+            StudySession.starts_at < end, StudySession.ends_at > start, StudySession.status != "skipped")).all()
+        events = session.scalars(select(Event).where(Event.starts_at < end, Event.ends_at > start)).all()
+        busy = [(e.starts_at, e.ends_at) for e in events] + [(k.starts_at, k.ends_at) for k in kept]
+        booked = sum(_minutes(k.starts_at, k.ends_at) for k in kept if k.status == "done" or k.ends_at > now)
+        for p in plan_day(day, tz, prefs, tasks, busy, now, planned, booked):
+            planned[p.target_id] += _minutes(p.starts_at, p.ends_at)
+            created.append(StudySession(task_id=p.task_id, event_id=p.event_id, course_id=p.course_id,
+                                        starts_at=p.starts_at, ends_at=p.ends_at, reason=p.reason))
+    session.add_all(created)
+    session.flush()
+    return created
+
+
+def materials(index: knowledge.Index, target, focus: str = ""):
+    """`focus`: the weak concepts of the assessment's course (phase 6), so their files come first."""
     if getattr(target, 'event_id', None):
         # Without a course association, an assessment title cannot identify trustworthy files.
-        return knowledge.suggest_text(index, target.title, target.course_id, 'exam') if target.course_id else []
+        return knowledge.suggest_text(index, f"{target.title} {focus}".strip(), target.course_id, 'exam') if target.course_id else []
     return knowledge.suggest(index, target)
 
 
@@ -43,7 +88,11 @@ def recommendation(session: Session, now: datetime, prefs: PlanPrefs, tz: ZoneIn
     if not rec:
         return None
     target = ranked(candidates, now, prefs)[0][0]
-    rec['materials'] = materials(knowledge.load_index(session), target)
+    from peace.mastery import weak_concepts  # mastery imports the routes, which import this module
+    exam = getattr(target, 'event_id', None) and target.course_id  # weak concepts matter before an assessment
+    focus = " ".join(c.name for c in weak_concepts(session, target.course_id, now)[:3]) if exam else ""
+    rec['materials'] = materials(knowledge.load_index(session), target, focus)
+    rec['focus'] = focus or None
     rec['course'] = {'id': target.course.id, 'name': target.course.name, 'code': target.course.code} if target.course else None
     rec['due_at'] = target.due_at
     rec['proposed_changes'] = []

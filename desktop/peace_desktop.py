@@ -45,9 +45,11 @@ API = os.environ.get("PEACE_URL", "http://127.0.0.1:8420").rstrip("/")
 DASHBOARD = os.environ.get("PEACE_DASHBOARD", API).rstrip("/")
 POLL_SECONDS = int(os.environ.get("PEACE_POLL_SECONDS", "30"))  # heartbeat and settings
 NOTIFY_SECONDS = 3  # pending notifications: a local request, so a short wait costs nothing
+SERVER_SILENT_POLLS = 120 // NOTIFY_SECONDS  # two minutes without the server
 ICON = os.path.expanduser("~/.local/share/icons/hicolor/scalable/apps/peace.svg")
 LABELS = {"done": "Concluída", "snooze": "Adiar", "skip": "Saltar", "replan": "Replanear"}
-VAULT = Path(os.environ.get("PEACE_VAULT", "~/Peace Vault")).expanduser()
+VAULT = actions.VAULT  # follows the vault chosen in Settings (apply_vault), unless PEACE_VAULT pins one
+VAULT_PINNED = bool(os.environ.get("PEACE_VAULT"))
 STATE = Path(os.environ.get("PEACE_STATE", "~/.local/state/peace/materials.json")).expanduser()
 MIRROR_MINUTES = int(os.environ.get("PEACE_MIRROR_MINUTES", "30"))
 MAX_BYTES = int(os.environ.get("PEACE_MATERIALS_MAX_MB", "200")) * 1024 * 1024
@@ -80,13 +82,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _inside_vault(relative: str) -> Path | None:
+def _inside_vault(relative: str, vault: Path | None = None) -> Path | None:
     """Target for a server-given path, or None if it would leave the vault or touch a hidden folder."""
+    vault = vault or VAULT
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(p.startswith(".") for p in parts):
         return None
-    target = (VAULT / relative).resolve()
-    return target if target.is_relative_to(VAULT.resolve()) else None
+    target = (vault / relative).resolve()
+    return target if target.is_relative_to(vault.resolve()) else None
 
 
 def download(material_id: int, target: Path) -> None:
@@ -100,13 +103,50 @@ def download(material_id: int, target: Path) -> None:
         partial.unlink(missing_ok=True)
 
 
+vault_changed = threading.Event()  # wakes the mirror loop so a newly chosen vault fills at once
+
+
+def apply_vault(prefs: dict) -> None:
+    """Copy into the vault Settings chose. Only a vault Obsidian lists on this PC: the server never picks a folder.
+    "Automatic" never moves an agent whose folder exists: it only finds one when there is none yet."""
+    global VAULT
+    path = (prefs.get("vault") or {}).get("path")
+    if VAULT_PINNED or not path or path not in {v["path"] for v in actions.obsidian_vaults()}:
+        return
+    if not prefs.get("chosen") and VAULT.is_dir():
+        return
+    if Path(path) != VAULT:
+        log.info("vault is now %s", path)
+        VAULT = actions.VAULT = Path(path)
+        vault_changed.set()
+
+
+def vault_info() -> dict | None:
+    """The folder this agent copies into, for the heartbeat (Settings shows the real one)."""
+    return {"path": str(VAULT.resolve()), "pinned": VAULT_PINNED} if VAULT.is_dir() else None
+
+
+def _load_state(file: Path, vault: Path) -> dict:
+    """A manifest describes one vault: after a switch the new vault starts empty and gets everything."""
+    state = json.loads(file.read_text()) if file.exists() else {}
+    owner = state.pop("__vault__", str(vault))  # manifests from before vault switching belong to the current vault
+    return state if owner == str(vault) else {}
+
+
+def _save_state(file: Path, state: dict, vault: Path) -> None:
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.with_suffix(".tmp").write_text(json.dumps({**state, "__vault__": str(vault)}, indent=1))
+    os.replace(file.with_suffix(".tmp"), file)
+
+
 def mirror_materials() -> int:
     """Copy new or changed Moodle files into the vault. Never overwrites a file it did not write or that
     was edited since (the new version goes next to it), never deletes. Returns files written."""
-    if not VAULT.is_dir():
-        log.warning("vault %s not found; materials not copied", VAULT)
+    vault = VAULT  # one vault for the whole round, even if Settings switches it meanwhile
+    if not vault.is_dir():
+        log.warning("vault %s not found; materials not copied", vault)
         return 0
-    state = json.loads(STATE.read_text()) if STATE.exists() else {}
+    state = _load_state(STATE, vault)
     written = 0
     for m in call("GET", "/api/v1/materials?kind=file") or []:
         # Keyed by vault path, not database id, so a re-deployed server does not duplicate every file.
@@ -114,7 +154,7 @@ def mirror_materials() -> int:
         known = state.get(key)
         if (known and known["modified_at"] == m["modified_at"]) or (m["size"] or 0) > MAX_BYTES:
             continue
-        target = _inside_vault(m["vault_path"] or "")
+        target = _inside_vault(m["vault_path"] or "", vault)
         if target is None:
             log.warning("unsafe path for material %s skipped: %r", m["id"], m["vault_path"])
             continue
@@ -129,32 +169,40 @@ def mirror_materials() -> int:
                 continue
             raise
         state[key] = {"path": str(target), "modified_at": m["modified_at"], "sha256": _sha256(target)}
-        STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.with_suffix(".tmp").write_text(json.dumps(state, indent=1))
-        os.replace(STATE.with_suffix(".tmp"), STATE)
+        _save_state(STATE, state, vault)
         written += 1
     return written
 
 
 NOTES_DIR = "07 - Generated/Graphify"
+DAILY_DIR = "07 - Generated/Peace/Diário"
+DELIVERIES_DIR = "07 - Generated/Peace/Entregas"
 
 
 def mirror_notes() -> int:
-    """Keep Graphify's generated notes in the vault's generated folder. Updates or removes only notes
-    this agent wrote and that are unchanged since; never touches the user's own files there."""
-    if not VAULT.is_dir():
+    """Graphify's notes, PEACE's daily notes and assignment readiness reports, each in its own generated folder."""
+    return (_mirror("/api/v1/knowledge/notes", NOTES_DIR, "graphify-notes.json")
+            + _mirror("/api/v1/knowledge/daily", DAILY_DIR, "daily-notes.json")
+            + _mirror("/api/v1/knowledge/deliveries", DELIVERIES_DIR, "delivery-notes.json"))
+
+
+def _mirror(api: str, folder: str, state_name: str) -> int:
+    """Keep the server's notes in a vault folder. Updates or removes only notes this agent wrote and that are
+    unchanged since; never touches the user's own files there."""
+    vault = VAULT
+    if not vault.is_dir():
         return 0
-    state_file = STATE.with_name("graphify-notes.json")
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    remote = {n["path"]: n["sha256"] for n in call("GET", "/api/v1/knowledge/notes") or []}
+    state_file = STATE.with_name(state_name)
+    state = _load_state(state_file, vault)
+    remote = {n["path"]: n["sha256"] for n in call("GET", api) or []}
     written = 0
     for path, sha in remote.items():
-        target = _inside_vault(f"{NOTES_DIR}/{path}")
+        target = _inside_vault(f"{folder}/{path}", vault)
         if target is None or state.get(path) == sha:
             continue
         if target.exists() and (path not in state or _sha256(target) != state[path]):
             continue  # someone else's file, or edited by the user
-        request = _request("GET", f"/api/v1/knowledge/notes/file?path={urllib.parse.quote(path)}")
+        request = _request("GET", f"{api}/file?path={urllib.parse.quote(path)}")
         with urllib.request.urlopen(request, timeout=30) as r:
             data = r.read()
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,12 +211,11 @@ def mirror_notes() -> int:
         state[path] = hashlib.sha256(data).hexdigest()
         written += 1
     for path in [p for p in state if p not in remote]:
-        target = _inside_vault(f"{NOTES_DIR}/{path}")
+        target = _inside_vault(f"{folder}/{path}", vault)
         if target and target.exists() and _sha256(target) == state[path]:
             target.unlink()
         del state[path]
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=1))
+    _save_state(state_file, state, vault)
     return written
 
 
@@ -181,7 +228,8 @@ def mirror_loop() -> None:
                 log.info("updated %d graph notes in the vault", n)
         except (urllib.error.URLError, OSError, ValueError) as e:
             log.warning("materials not copied this time: %s", e)
-        time.sleep(MIRROR_MINUTES * 60)
+        vault_changed.wait(MIRROR_MINUTES * 60)
+        vault_changed.clear()
 
 
 def command(n: dict) -> list[str]:
@@ -305,6 +353,8 @@ def report_notification_delivery(**values) -> None:
 # the reply is spoken (when a fast enough voice is configured) or shown as a notification.
 
 VOICESTUDIO = os.environ.get("PEACE_VOICESTUDIO", "http://127.0.0.1:3900").rstrip("/")
+# Hearing can be its own server, e.g. whisper.cpp on the GPU (peace-stt.service, ~150 ms instead of ~2.5 s).
+STT_URL = os.environ.get("PEACE_STT_URL", VOICESTUDIO).rstrip("/")
 OLLAMA = os.environ.get("PEACE_OLLAMA", "http://127.0.0.1:11434").rstrip("/")
 LLM_MODEL = os.environ.get("PEACE_LLM_MODEL", "gpt-oss:20b")  # until the server says which model it uses
 PTT = os.environ.get("PEACE_PTT", "SUPER + Y")  # Hyprland key combo, as written in hyprland.lua
@@ -366,17 +416,20 @@ def _up(url: str) -> bool:
 
 def capabilities() -> dict:
     """What this desktop can really do right now (the dashboard shows exactly this)."""
-    engine = _up(VOICESTUDIO + "/health")
-    voice_diagnostics["stt_available"] = engine
+    engine = _up(VOICESTUDIO + "/health")  # speaking
+    gpu_stt = None if STT_URL == VOICESTUDIO else _up(STT_URL + "/health")
+    voice_diagnostics["stt_gpu"] = gpu_stt  # None: no separate GPU server configured
+    voice_diagnostics["stt_available"] = hearing = bool(gpu_stt or engine)  # the CPU takes over when the GPU server is down
     voice_diagnostics["capture_available"] = bool(RUNTIME and shutil.which("pw-record") and voice_diagnostics["inputs"]
         and (not settings["input_device"] or any(d["id"] == settings["input_device"] for d in voice_diagnostics["inputs"])))
     voice_diagnostics["playback_available"] = bool(RUNTIME and shutil.which("pw-play") and voice_diagnostics["outputs"]
         and (not settings["output_device"] or any(d["id"] == settings["output_device"] for d in voice_diagnostics["outputs"])))
-    voice = engine and voice_diagnostics["capture_available"] and voice_diagnostics["ptt_bound"]
+    voice = hearing and voice_diagnostics["capture_available"] and voice_diagnostics["ptt_bound"]
     speaking = TTS != "off" and settings["speak"]
     name = ("STT pt" + (f" · {TTS} {settings['voice']}" if speaking else ", respostas escritas")) if voice else None
     return {"voice": voice, "voice_name": name, "ptt": settings["ptt"].replace(" ", ""), "llm": _up(OLLAMA + "/api/tags"),
-            "voices": VOICES.get(TTS, []) if engine else [], "audio": voice_diagnostics, "actions": actions.availability()}
+            "voices": VOICES.get(TTS, []) if engine else [], "audio": voice_diagnostics, "actions": actions.availability(),
+            "vaults": actions.obsidian_vaults(), "vault": vault_info()}
 
 
 def _hyprctl(*args: str) -> bool:
@@ -458,11 +511,37 @@ def multipart(fields: dict[str, str], file_field: str, filename: str, data: byte
     return b"".join(parts) + f"--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
 
 
+# Words PEACE is asked to act on: Whisper hears "adicionares uma" as "atos finais do meu" without this hint.
+# No times or numbers in it: Whisper copies them ("às oito" came out as the hint's "às 20h").
+STT_HINT = "Olá PEACE. Adiciona uma reunião. Marca uma consulta. Lembra-me de estudar. Cria uma tarefa. O que tenho hoje?"
+
+
 def transcribe(wav: Path) -> str:
-    body, kind = multipart({"model": "whisper-1", "language": "pt"}, "file", "fala.wav", wav.read_bytes())
-    request = urllib.request.Request(VOICESTUDIO + "/v1/audio/transcriptions", data=body, method="POST", headers={"Content-Type": kind})
-    with urllib.request.urlopen(request, timeout=60) as r:
-        return json.loads(r.read()).get("text", "").strip()
+    """Speech to text on the GPU server; if it is down or out of memory, VoiceStudio's Whisper on the CPU (~3 s)."""
+    body, kind = multipart({"model": "whisper-1", "language": "pt", "prompt": STT_HINT}, "file", "fala.wav", wav.read_bytes())
+    engines = list(dict.fromkeys((STT_URL, VOICESTUDIO)))
+    for url in engines:
+        request = urllib.request.Request(url + "/v1/audio/transcriptions", data=body, method="POST", headers={"Content-Type": kind})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as r:
+                text = json.loads(r.read()).get("text", "").strip()
+        except (urllib.error.URLError, OSError) as e:
+            if url == engines[-1]:
+                raise
+            log.warning("speech recognition at %s failed (%s); trying VoiceStudio on the CPU", url, type(e).__name__)
+            continue
+        voice_diagnostics["latency"]["stt_engine"] = "voicestudio" if url == VOICESTUDIO else "gpu"
+        return text
+    return ""
+
+
+def model_allowed() -> bool:
+    """The server's GPU/RAM policy (peace.llm): never load the model for warming or translating while a game needs
+    the memory. No answer from the server: do not load either."""
+    try:
+        return bool(call("GET", "/api/v1/assistant/status")["model"]["reachable"])
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def for_speech(text: str) -> str:
@@ -493,12 +572,14 @@ def keys_held(combo: str) -> bool | None:
 
 
 def warm_model() -> None:
-    """Load the model while the user speaks: Ollama unloads it after 10 idle minutes and loading takes ~11 s."""
-    body = {"model": settings["model"], "keep_alive": "10m", "options": {"num_ctx": 8192}}  # the server's num_ctx, or it reloads
+    """Load the model while the user speaks: Ollama unloads it after 30 idle minutes, and loading can take minutes."""
+    if not model_allowed():
+        return
+    body = {"model": settings["model"], "keep_alive": "30m", "options": {"num_ctx": 8192, "use_mmap": False}}  # the server's num_ctx, or it reloads
     request = urllib.request.Request(OLLAMA + "/api/generate", method="POST", headers={"Content-Type": "application/json"},
                                      data=json.dumps(body).encode())
     try:
-        with urllib.request.urlopen(request, timeout=60) as r:
+        with urllib.request.urlopen(request, timeout=900) as r:  # giving up early would cancel the load
             r.read()
     except (urllib.error.URLError, OSError, ValueError):
         pass  # the turn itself reports a missing model
@@ -506,8 +587,8 @@ def warm_model() -> None:
 
 def to_english(text: str) -> str | None:
     """PEACE's replies are Portuguese; the speech engine sounds far better in English. None: speak Portuguese."""
-    body = {"model": settings["model"], "stream": False, "think": "low", "keep_alive": "10m",
-            "options": {"temperature": 0, "num_ctx": 8192},  # the server's num_ctx: a different one reloads the model
+    body = {"model": settings["model"], "stream": False, "think": "low", "keep_alive": "30m",
+            "options": {"temperature": 0, "num_ctx": 8192, "use_mmap": False},  # the server's num_ctx: a different one reloads the model
             "messages": [{"role": "system", "content": "Translate the user message from European Portuguese into natural "
                                                       "spoken English. Reply with the translation only."},
                          {"role": "user", "content": text.replace("«", "").replace("»", "")}]}
@@ -521,7 +602,7 @@ def to_english(text: str) -> str | None:
 
 
 def speak(text: str, voice_name: str | None = None, output_device: str | None = None, language: str | None = None) -> None:
-    english = to_english(text) if (language or settings["language"]) == "en" else None
+    english = to_english(text) if (language or settings["language"]) == "en" and model_allowed() else None
     body = {"model": TTS, "input": english or for_speech(text), "voice": settings["voice"] if voice_name is None else voice_name,
             "language": "en" if english else "pt", "response_format": "wav"}
     request = urllib.request.Request(VOICESTUDIO + "/v1/audio/speech", method="POST", headers={"Content-Type": "application/json"},
@@ -954,6 +1035,7 @@ def main() -> None:
                     # The server's model, so translation and warm-up never load a second one.
                     settings["model"] = (call("GET", "/api/v1/assistant/models") or {}).get("using") or settings["model"]
                     call("POST", "/api/v1/desktop/heartbeat", {"capabilities": capabilities()})
+                    apply_vault(call("GET", "/api/v1/preferences/obsidian") or {})
                 except (urllib.error.URLError, OSError, ValueError) as e:
                     log.warning("voice settings/heartbeat failed: %s", e)
                 report_notification_delivery(**notification_diagnostics())
@@ -961,11 +1043,15 @@ def main() -> None:
                 deliver(n)
             if failures:
                 log.info("server reachable again")
+                if failures >= SERVER_SILENT_POLLS:
+                    notify_reply("PEACE", "O servidor da PEACE voltou a responder.")
             failures = 0
         except urllib.error.HTTPError as e:
             log.error("server refused the request (%s); check PEACE_TOKEN", e.code)
         except (urllib.error.URLError, OSError, ValueError) as e:
             failures += 1
+            if failures == SERVER_SILENT_POLLS:  # once per outage, not on a single missed poll
+                notify_reply("PEACE", "O servidor da PEACE não responde há 2 minutos: sem lembretes nem voz até voltar.")
             if failures == 1 or failures % 120 == 0:
                 log.warning("server unreachable (%s); retrying", e)
         time.sleep(NOTIFY_SECONDS)

@@ -1,13 +1,18 @@
-import { LogOut, Moon, Sun } from 'lucide-react'
+import { ExternalLink, LogOut, Moon, Sun } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { SOURCE_NAME, SyncButton, SyncHealthList } from '../components/sync'
+import Diagnostics from '../components/Diagnostics'
 import NotificationDiagnostics from '../components/NotificationDiagnostics'
-import { Badge, Button, Card, Checkbox, ErrorNote, Field, Input, PageHeader, Segmented, Select, Skeleton, cx, useToast } from '../components/ui'
+import { Button, Card, Checkbox, ErrorNote, Field, Input, PageHeader, Segmented, Select, Skeleton, cx, useToast } from '../components/ui'
 import { DEFAULT_ACCENT, accentVariants, applyAccent, contrast, isHex, useTheme } from '../lib/theme'
 import { OrbMark } from '../components/Layout'
-import { api, type Appearance, type Integrations, type NotifyPrefs, type PlanPrefs, type VoicePrefs } from '../lib/api'
+import { setVaultName } from '../components/materials'
+import { useHolo } from '../holo/HoloHands'
+import { PINCH_IN, PINCH_OUT } from '../holo/gestures'
+import { api, type Appearance, type IntegrationsForm as IntegrationsValues, type NotifyPrefs, type PhonePrefs, type PlanPrefs, type ReviewRules, type VoicePrefs } from '../lib/api'
 import { useApi, useNow } from '../lib/hooks'
+import { ago } from '../lib/format'
 
 const hhmm = (t: string) => t.slice(0, 5)
 const PRESETS = [
@@ -157,29 +162,31 @@ function VoiceForm() {
 const EXAMPLE_URL = {
   moodle: 'O Moodle da tua universidade, ex.: https://moodle.universidade.pt',
   inforestudante: 'O portal Nónio (inforestudante), ex.: https://inforestudante.universidade.pt/nonio',
+  email: 'O webmail da universidade, ex.: https://webmail.universidade.pt/owa',
 }
+const SOURCE_LABEL: Record<string, string> = { ...SOURCE_NAME, email: 'Email da universidade' }
 
 /** Which sources PEACE syncs, their addresses and logins. Passwords are write-only: empty keeps the saved one. */
 function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
   const toast = useToast()
   const prefs = useApi(() => api.integrations(), [], 0)
-  type Row = { enabled: boolean; url: string; username: string; password: string }
-  const [form, setForm] = useState<Record<keyof Integrations, Row> | null>(null)
+  const [form, setForm] = useState<IntegrationsValues | null>(null)
   useEffect(() => {
     if (prefs.data && !form) {
-      const row = (s: keyof Integrations) => ({ enabled: prefs.data![s].enabled, url: prefs.data![s].url, username: prefs.data![s].username, password: '' })
-      setForm({ inforestudante: row('inforestudante'), moodle: row('moodle') })
+      const row = (s: 'inforestudante' | 'moodle' | 'email') => ({ enabled: prefs.data![s].enabled, url: prefs.data![s].url, username: prefs.data![s].username, password: '' })
+      const { clean_junk, quota_mb } = prefs.data.email
+      setForm({ inforestudante: row('inforestudante'), moodle: row('moodle'), email: { ...row('email'), clean_junk, quota_mb } })
     }
   }, [prefs.data, form])
   if (prefs.error) return <ErrorNote error={prefs.error} onRetry={prefs.reload} />
   if (!form || !prefs.data) return <Skeleton className="h-32" />
 
-  const set = (s: keyof Integrations, patch: Partial<Row>) => setForm({ ...form, [s]: { ...form[s], ...patch } })
+  const set = (s: keyof IntegrationsValues, patch: Partial<IntegrationsValues['email']>) => setForm({ ...form, [s]: { ...form[s], ...patch } })
   async function submit(e: FormEvent) {
     e.preventDefault()
     try {
       prefs.setData(await api.saveIntegrations(form!))
-      setForm({ inforestudante: { ...form!.inforestudante, password: '' }, moodle: { ...form!.moodle, password: '' } })
+      setForm({ inforestudante: { ...form!.inforestudante, password: '' }, moodle: { ...form!.moodle, password: '' }, email: { ...form!.email, password: '' } })
       toast('Integrações guardadas', 'ok')
       onSaved()
     } catch (err) {
@@ -188,11 +195,11 @@ function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
   }
   return (
     <form onSubmit={submit} className="grid gap-5">
-      {(['inforestudante', 'moodle'] as const).map((s) => (
+      {(['inforestudante', 'moodle', 'email'] as const).map((s) => (
         <fieldset key={s} className="grid gap-3">
           <label className="flex items-center gap-2 text-[13px] font-medium">
-            <Checkbox checked={form[s].enabled} onChange={(enabled) => set(s, { enabled })} label={`Ligar ${SOURCE_NAME[s]}`} />
-            {SOURCE_NAME[s]}
+            <Checkbox checked={form[s].enabled} onChange={(enabled) => set(s, { enabled })} label={`Ligar ${SOURCE_LABEL[s]}`} />
+            {SOURCE_LABEL[s]}
           </label>
           <Field label="Endereço" hint={EXAMPLE_URL[s]} className="sm:max-w-md">
             <Input type="url" value={form[s].url} maxLength={300} placeholder="https://" onChange={(e) => set(s, { url: e.target.value.trim() })} />
@@ -205,12 +212,83 @@ function IntegrationsForm({ onSaved }: { onSaved: () => void }) {
               <Input type="password" value={form[s].password} maxLength={200} autoComplete="new-password" disabled={!form[s].enabled} onChange={(e) => set(s, { password: e.target.value })} />
             </Field>
           </div>
+          {s === 'email' && (
+            <div className="grid gap-3">
+              <p className="text-xs text-muted">Só leitura, exceto a limpeza abaixo. A PEACE nunca envia emails nem marca nada como lido.</p>
+              <label className="flex items-center gap-2 text-[13px]">
+                <Checkbox checked={form.email.clean_junk} onChange={(clean_junk) => set('email', { clean_junk })} label="Limpar o lixo eletrónico" />
+                Mover para Itens Eliminados o Lixo Eletrónico com mais de 14 dias (podes repor durante 30 dias)
+              </label>
+              <Field label="Limite da caixa (MB)" hint="Opcional. Avisa-te aos 85 %." className="sm:w-60">
+                <Input type="number" min={1} step={1} value={form.email.quota_mb ?? ''} disabled={!form.email.enabled}
+                  onChange={(e) => set('email', { quota_mb: e.target.value ? Number(e.target.value) : null })} />
+              </Field>
+            </div>
+          )}
         </fieldset>
       ))}
       <div>
         <Button variant="primary" type="submit">
           Guardar integrações
         </Button>
+      </div>
+    </form>
+  )
+}
+
+/** Reminders on the phone through ntfy: a secret topic, the app subscribes to it. */
+function PhoneForm() {
+  const toast = useToast()
+  const prefs = useApi(() => api.phone(), [], 0)
+  const [form, setForm] = useState<PhonePrefs | null>(null)
+  useEffect(() => {
+    if (prefs.data) setForm((f) => f ?? prefs.data!)
+  }, [prefs.data])
+  if (prefs.error) return <ErrorNote error={prefs.error} onRetry={prefs.reload} />
+  if (!form) return <Skeleton className="h-32" />
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    try {
+      setForm(await api.savePhone(form!))
+      toast('Telemóvel guardado', 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    }
+  }
+  async function test() {
+    try {
+      await api.testPhone()
+      toast('Mensagem de teste enviada: vê o telemóvel', 'ok')
+    } catch (err) {
+      toast(`O teste falhou: ${(err as Error).message}`, 'error')
+    }
+  }
+  return (
+    <form onSubmit={submit} className="grid gap-4">
+      <ol className="grid list-decimal gap-1 pl-5 text-[13px] text-muted">
+        <li>Instala a app <span className="text-text">ntfy</span> no telemóvel (Android ou iPhone).</li>
+        <li>
+          Na app, carrega em «+» e subscreve o tópico <code className="select-all rounded bg-surface-2 px-1.5 py-0.5 text-text">{form.topic}</code>
+          {form.server !== 'https://ntfy.sh' && <> no servidor <code className="rounded bg-surface-2 px-1.5 py-0.5">{form.server}</code></>}.
+        </li>
+        <li>Liga aqui, guarda e carrega em «Enviar teste».</li>
+      </ol>
+      <label className="flex items-center gap-2 text-[13px]">
+        <Checkbox checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} label="Enviar lembretes para o telemóvel" />
+        Enviar lembretes para o telemóvel
+      </label>
+      <Field label="Quando">
+        <Select aria-label="Quando enviar para o telemóvel" value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value as PhonePrefs['mode'] })} className="sm:w-80">
+          <option value="away">Só quando o PC está desligado</option>
+          <option value="always">Sempre (também no PC)</option>
+        </Select>
+      </Field>
+      <Field label="Servidor ntfy" hint="As mensagens passam por este servidor. O nome do tópico é o único segredo: não o partilhes.">
+        <Input type="url" value={form.server} onChange={(e) => setForm({ ...form, server: e.target.value.trim() })} className="sm:max-w-md" />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" type="submit">Guardar telemóvel</Button>
+        <Button type="button" onClick={() => void test()}>Enviar teste</Button>
       </div>
     </form>
   )
@@ -250,6 +328,231 @@ function ModelForm() {
           ))}
         </Select>
       </Field>
+    </div>
+  )
+}
+
+const GOOGLE_RESULT: Record<string, [string, 'ok' | 'error']> = {
+  ligado: ['Google Calendar ligado: a primeira sincronização começa dentro de momentos.', 'ok'],
+  permissao: ['Para sincronizar, a Google tem de autorizar o acesso ao calendário. Tenta outra vez e aceita as permissões.', 'error'],
+  erro: ['Não foi possível ligar o Google Calendar. Verifica a internet e tenta outra vez.', 'error'],
+}
+
+/** Two-way sync with a "PEACE" calendar in the user's Google account; their other calendars come in read-only. */
+function GoogleCalendarForm() {
+  const toast = useToast()
+  const [params, setParams] = useSearchParams()
+  const cal = useApi(() => api.googleCalendar(), [], 30_000)
+  const [leaving, setLeaving] = useState(false)
+  const [deleteCalendar, setDeleteCalendar] = useState(false)
+  useEffect(() => {
+    const result = GOOGLE_RESULT[params.get('google') ?? '']
+    if (!result) return
+    toast(...result)
+    setParams({}, { replace: true })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  if (cal.error) return <ErrorNote error={cal.error} onRetry={cal.reload} />
+  if (!cal.data) return <Skeleton className="h-16" />
+  const c = cal.data
+  if (!c.available) return <p className="text-[13px] text-muted">Esta instalação ainda não tem a ligação à Google.</p>
+  if (!c.connected)
+    return (
+      <div className="grid gap-3">
+        <p className="text-[13px] text-muted">
+          A PEACE cria o calendário «PEACE» na tua conta Google com as aulas, avaliações, prazos e compromissos. O que mudares lá ou aqui
+          muda nos dois lados. Os teus outros calendários aparecem aqui só para leitura, para o plano de estudo não os pisar.
+        </p>
+        <a href="/auth/google/start?calendar=1" className="inline-flex h-9 w-fit items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-ink hover:brightness-110">
+          Ligar Google Calendar
+        </a>
+      </div>
+    )
+  async function toggleSessions(sessions: boolean) {
+    try {
+      await api.saveGoogleCalendar(sessions)
+      cal.reload()
+      toast('Preferência guardada', 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    }
+  }
+  async function disconnect() {
+    try {
+      await api.disconnectGoogleCalendar(deleteCalendar)
+      setLeaving(false)
+      cal.reload()
+      toast('Google Calendar desligado. Os teus dados na PEACE ficaram.', 'ok')
+    } catch (err) {
+      toast(`Não foi possível desligar: ${(err as Error).message}`, 'error')
+    }
+  }
+  return (
+    <div className="grid gap-4">
+      <p className="text-[13px] text-muted">
+        Ligado a {c.email}. {c.last_sync ? `Última sincronização ${ago(c.last_sync)}.` : 'A primeira sincronização está a decorrer.'}
+        {c.readonly_calendars > 0 && ` ${c.readonly_calendars} outro(s) calendário(s) só para leitura.`}
+      </p>
+      {c.error === 'reconnect' && (
+        <p role="alert" className="text-[13px] text-danger">
+          A Google deixou de aceitar a ligação.{' '}
+          <a href="/auth/google/start?calendar=1" className="font-medium underline">Ligar outra vez</a>
+        </p>
+      )}
+      {c.error === 'google' && <p role="alert" className="text-[13px] text-warn">A última sincronização falhou; a PEACE tenta outra vez sozinha.</p>}
+      <label className="flex items-center gap-2 text-[13px]">
+        <Checkbox label="Mostrar também as sessões de estudo no Google Calendar" checked={c.sessions} onChange={(v) => void toggleSessions(v)} />
+        Mostrar também as sessões de estudo no Google Calendar
+      </label>
+      {leaving ? (
+        <div className="grid gap-3 rounded-lg border border-line p-3">
+          <label className="flex items-center gap-2 text-[13px]">
+            <Checkbox label="Apagar também o calendário «PEACE» da minha conta Google" checked={deleteCalendar} onChange={setDeleteCalendar} />
+            Apagar também o calendário «PEACE» da minha conta Google
+          </label>
+          <div className="flex gap-2">
+            <Button variant="danger" onClick={() => void disconnect()}>Desligar</Button>
+            <Button variant="ghost" onClick={() => setLeaving(false)}>Cancelar</Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="ghost" className="w-fit" onClick={() => setLeaving(true)}>Desligar o Google Calendar</Button>
+      )}
+    </div>
+  )
+}
+
+const POSE_NAME: Record<string, string> = {
+  pinch: 'beliscar', point: 'apontar', two: 'dois dedos', vee: '✌', three: 'polegar, indicador e médio', palm: 'mão aberta', fist: 'punho', other: '—',
+}
+const GESTURE_NAME: Record<string, string> = {
+  select: 'escolher', open: 'abrir (duplo)', dragStart: 'arrastar', dragMove: 'arrastar', dragEnd: 'largar', scroll: 'deslizar',
+  zoom: 'zoom', escape: 'fechar', back: 'voltar', reset: 'posição inicial', lost: 'mão fora de vista',
+}
+
+/** Live view of what Holo Hands measures, and a 10 s landmark recording to tune it to the student's hand. */
+function HoloTuning() {
+  const toast = useToast()
+  const { on, reading, record } = useHolo()
+  const [now, setNow] = useState(reading.current)
+  const [left, setLeft] = useState(0)
+  useEffect(() => {
+    if (!on) return
+    const id = setInterval(() => setNow({ ...reading.current }), 100)
+    return () => clearInterval(id)
+  }, [on, reading])
+  if (!on) return <p className="text-[13px] text-muted">Liga o Holo Hands (botão ✋ na barra lateral ou a tecla H) para ver o que a câmara mede.</p>
+  // Closeness of thumb and index: 0 = far apart, 1 = touching. The lines mark where a pinch starts and ends.
+  const close = (r: number | null) => (r == null ? 0 : Math.max(0, Math.min(1, 1 - r / 0.9)))
+  async function go() {
+    setLeft(10)
+    const id = setInterval(() => setLeft((s) => Math.max(0, s - 1)), 1000)
+    try {
+      const frames = await record(10)
+      toast(`Gravação guardada (${frames} imagens da mão). Diz ao Claude para afinar o Holo Hands.`, 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    } finally {
+      clearInterval(id)
+      setLeft(0)
+    }
+  }
+  return (
+    <div className="grid gap-4">
+      <div>
+        <div className="mb-1 flex justify-between text-xs text-muted">
+          <span>Polegar e indicador: {now.ratio == null ? 'sem mão' : now.pinched ? 'a beliscar' : 'abertos'}</span>
+          <span>Pose: {POSE_NAME[now.pose] ?? now.pose} · Último gesto: {now.gesture ? GESTURE_NAME[now.gesture] ?? now.gesture : '—'}</span>
+        </div>
+        <div className="relative h-3 overflow-hidden rounded-full bg-surface-2" role="meter" aria-label="Beliscar" aria-valuemin={0} aria-valuemax={1} aria-valuenow={close(now.ratio)}>
+          <div className={cx('h-full rounded-full transition-[width] duration-100', now.pinched ? 'bg-accent' : 'bg-muted')} style={{ width: `${close(now.ratio) * 100}%` }} />
+          <span aria-hidden title="Começa a beliscar" className="absolute inset-y-0 w-0.5 bg-ok" style={{ left: `${close(PINCH_IN) * 100}%` }} />
+          <span aria-hidden title="Larga" className="absolute inset-y-0 w-0.5 bg-warn" style={{ left: `${close(PINCH_OUT) * 100}%` }} />
+        </div>
+        <p className="mt-1 text-[11px] text-faint">A linha verde é onde o beliscar começa; a laranja, onde larga.</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={() => void go()} disabled={left > 0}>
+          {left > 0 ? `A gravar… ${left}s` : 'Gravar 10 s para afinar'}
+        </Button>
+        <span className="text-xs text-faint">Durante a gravação: 3 beliscões lentos, 3 duplos, e mexe a mão devagar. Só se guardam os pontos da mão, nunca imagem.</span>
+      </div>
+    </div>
+  )
+}
+
+/** The Google account that signs in to this PEACE; linking one needs this already signed-in browser. */
+function GoogleAccount() {
+  const account = useApi(() => api.googleAccount(), [], 0)
+  if (!account.data?.available) return null
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
+      <p className="text-[13px] text-muted">
+        {account.data.email ? `Entras com a conta Google ${account.data.email}.` : 'Liga a tua conta Google para entrares sem token.'}
+      </p>
+      {!account.data.email && (
+        <a href="/auth/google/start" className="inline-flex h-9 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-ink hover:brightness-110">
+          Ligar conta Google
+        </a>
+      )}
+    </div>
+  )
+}
+
+/** The vault PEACE copies notes, materials and the knowledge graph into; Obsidian Sync takes them to other devices. */
+function ObsidianForm() {
+  const toast = useToast()
+  const prefs = useApi(() => api.obsidian(), [], 30_000)
+  if (prefs.error) return <ErrorNote error={prefs.error} onRetry={prefs.reload} />
+  if (!prefs.data) return <Skeleton className="h-16" />
+  const { chosen, vaults, vault, pinned } = prefs.data
+  async function choose(path: string) {
+    try {
+      const saved = await api.chooseVault(path)
+      if (saved.vault) setVaultName(saved.vault.name)
+      prefs.reload()
+      toast('Cofre guardado', 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    }
+  }
+  if (!vaults.length)
+    return (
+      <p className="text-[13px] text-muted">
+        Não encontrei o Obsidian neste PC. Instala-o em{' '}
+        <a href="https://obsidian.md" target="_blank" rel="noreferrer noopener" className="text-accent hover:underline">obsidian.md</a>{' '}
+        e cria ou abre um cofre: aparece aqui sozinho.
+      </p>
+    )
+  return (
+    <div className="grid gap-3">
+      <p className="text-[13px] text-muted">
+        {vault
+          ? `A PEACE guarda no cofre «${vault.name}» os materiais das cadeiras, o diário e o grafo de conhecimento (pasta 07 - Generated).`
+          : 'Escolhe o cofre onde a PEACE guarda os materiais, o diário e o grafo de conhecimento.'}
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="Cofre">
+          <Select aria-label="Cofre do Obsidian" value={chosen} disabled={pinned} onChange={(e) => void choose(e.target.value)} className="sm:w-72">
+            <option value="">Automático{!chosen && vault ? ` (${vault.name})` : ''}</option>
+            {vaults.map((v) => (
+              <option key={v.path} value={v.path}>{v.name}</option>
+            ))}
+          </Select>
+        </Field>
+        {vault && (
+          <a
+            href={`obsidian://open?vault=${encodeURIComponent(vault.name)}`}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] font-medium hover:border-accent/50 hover:text-accent"
+          >
+            <ExternalLink className="size-4" /> Abrir no Obsidian
+          </a>
+        )}
+      </div>
+      <p className="text-xs text-faint">
+        {pinned && 'Cofre fixado por PEACE_VAULT no ficheiro desktop.env. '}
+        Para veres tudo no telemóvel ou noutro PC, liga o Obsidian Sync a este cofre na app do Obsidian. Ao mudar de cofre, a PEACE copia tudo
+        para o novo e não apaga nada do anterior.
+      </p>
     </div>
   )
 }
@@ -371,7 +674,8 @@ function PlannerForm() {
   const prefs = useApi(() => api.planner(), [], 0)
   const [form, setForm] = useState<PlanPrefs | null>(null)
   useEffect(() => {
-    if (prefs.data) setForm({ ...prefs.data, study_start: hhmm(prefs.data.study_start), study_end: hhmm(prefs.data.study_end) })
+    if (prefs.data)
+      setForm({ ...prefs.data, study_start: hhmm(prefs.data.study_start), study_end: hhmm(prefs.data.study_end), recovery_study_end: hhmm(prefs.data.recovery_study_end) })
   }, [prefs.data])
   if (prefs.error) return <ErrorNote error={prefs.error} onRetry={prefs.reload} />
   if (!form) return <Skeleton className="h-40" />
@@ -413,6 +717,12 @@ function PlannerForm() {
         <Field label="Preparação inicial por avaliação (min)" hint="Orçamento de planeamento; não mede a tua preparação">
           <Input type="number" min={15} max={600} step={15} value={form.default_exam_minutes} onChange={num('default_exam_minutes')} />
         </Field>
+        <Field label="Para recuperar, estudar no máximo até" hint="Só se escolheres essa opção em Rever">
+          <Input type="time" required value={form.recovery_study_end} onChange={(e) => setForm({ ...form, recovery_study_end: e.target.value })} />
+        </Field>
+        <Field label="Para recuperar, máximo por dia (min)" hint="Só se escolheres essa opção em Rever">
+          <Input type="number" min={15} max={720} step={15} value={form.recovery_max_daily_minutes} onChange={num('recovery_max_daily_minutes')} />
+        </Field>
       </div>
       <div>
         <Button variant="primary" type="submit">
@@ -430,6 +740,54 @@ const CATEGORIES: { key: keyof NotifyPrefs; label: string }[] = [
   { key: 'missed', label: 'Estudo que ficou por fazer' },
   { key: 'integrations', label: 'Problemas de sincronização' },
 ]
+
+const REVIEW_RULES: { key: keyof ReviewRules; label: string }[] = [
+  { key: 'deadline_earlier', label: 'Um prazo é antecipado' },
+  { key: 'deadline_later', label: 'Um prazo é adiado' },
+  { key: 'assessment_new', label: 'Aparece uma avaliação nova (até 30 dias)' },
+  { key: 'assessment_moved', label: 'Uma avaliação muda de data' },
+  { key: 'assignment_new', label: 'Aparece um trabalho novo (até 30 dias)' },
+]
+
+function ReviewRulesForm() {
+  const toast = useToast()
+  const rules = useApi(() => api.reviewRules(), [], 0)
+  const [form, setForm] = useState<ReviewRules | null>(null)
+  useEffect(() => {
+    if (rules.data) setForm(rules.data)
+  }, [rules.data])
+  if (rules.error) return <ErrorNote error={rules.error} onRetry={rules.reload} />
+  if (!form) return <Skeleton className="h-32" />
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    try {
+      await api.saveReviewRules(form!)
+      toast('Regras guardadas', 'ok')
+    } catch (err) {
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+    }
+  }
+  return (
+    <form onSubmit={submit} className="grid gap-5">
+      <fieldset className="grid gap-2.5">
+        <legend className="mb-2 text-xs font-medium text-muted">Sugerir um novo plano (em Rever) quando</legend>
+        {REVIEW_RULES.map(({ key, label }) => (
+          <label key={key} className="flex items-center gap-3 text-[13px]">
+            <Checkbox checked={form[key]} label={label} onChange={(v) => setForm({ ...form, [key]: v })} />
+            {label}
+          </label>
+        ))}
+      </fieldset>
+      <p className="text-xs text-faint">Só aparece uma sugestão quando o plano mudaria mesmo. Os prazos da universidade nunca são alterados.</p>
+      <div>
+        <Button variant="primary" type="submit">
+          Guardar regras
+        </Button>
+      </div>
+    </form>
+  )
+}
 
 function NotificationsForm() {
   const toast = useToast()
@@ -493,18 +851,6 @@ function NotificationsForm() {
   )
 }
 
-function Pending({ title, text, phase }: { title: string; text: string; phase: string }) {
-  return (
-    <div className="flex items-start justify-between gap-4 py-3">
-      <div>
-        <div className="text-[13px] font-medium">{title}</div>
-        <div className="text-xs text-muted">{text}</div>
-      </div>
-      <Badge>{phase}</Badge>
-    </div>
-  )
-}
-
 export default function Settings() {
   const now = useNow(60_000)
   const navigate = useNavigate()
@@ -529,6 +875,21 @@ export default function Settings() {
         <NotificationsForm />
         <NotificationDiagnostics />
       </Card>
+      <Card title="Rever">
+        <ReviewRulesForm />
+      </Card>
+      <Card title="Telemóvel">
+        <PhoneForm />
+      </Card>
+      <Card title="Google Calendar">
+        <GoogleCalendarForm />
+      </Card>
+      <Card title="Holo Hands">
+        <HoloTuning />
+      </Card>
+      <Card title="Obsidian">
+        <ObsidianForm />
+      </Card>
       <Card title="Assistente">
         <ModelForm />
       </Card>
@@ -549,12 +910,11 @@ export default function Settings() {
         />
         <span className="ml-3 inline-flex align-middle text-faint">{theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}</span>
       </Card>
-      <Card title="Ainda por ligar">
-        <div className="divide-y divide-line">
-          <Pending title="Obsidian" text="Índice das tuas notas do cofre Peace Vault." phase="Mais tarde" />
-        </div>
+      <Card title="Diagnóstico">
+        <Diagnostics />
       </Card>
       <Card title="Sessão">
+        <GoogleAccount />
         <Button
           onClick={async () => {
             await api.logout()

@@ -301,3 +301,30 @@ def test_a_backlog_of_low_priority_notifications_cannot_hide_a_reminder(client, 
         assert [n["title"] for n in client.get("/api/v1/notifications/pending").json()] == ["Avaliação amanhã"]
     finally:
         app.dependency_overrides.pop(get_now, None)
+
+
+def test_a_failed_sync_is_reported_the_same_day(session):
+    session.add(SyncRun(source="moodle", trigger="scheduled", status="success", finished_at=NOW - timedelta(hours=2)))
+    session.add(SyncRun(source="moodle", trigger="scheduled", status="failed", error="ConnectError", finished_at=NOW))
+    session.commit()
+    run(session)  # still fresh (36 h), but the latest run failed
+    n = session.query(Notification).filter_by(key="sync:moodle:2026-10-26").one()
+    assert "falhou" in n.body
+
+
+def test_a_silent_worker_is_reported_by_the_api(client, session):
+    from peace.notifications import worker_alive
+
+    worker_alive(session, NOW - timedelta(minutes=5))
+    session.commit()
+    app.dependency_overrides[get_now] = lambda: NOW
+    try:
+        assert not [n for n in client.get("/api/v1/notifications/pending").json() if n["title"].startswith("A PEACE parou")]
+        worker_alive(session, NOW - timedelta(minutes=20))
+        session.commit()
+        alerts = [n for n in client.get("/api/v1/notifications/pending").json() if n["title"] == "A PEACE parou de sincronizar"]
+        assert len(alerts) == 1 and alerts[0]["urgent"]
+        client.get("/api/v1/notifications/pending")
+        assert session.query(Notification).filter(Notification.key.like("worker:%")).count() == 1  # once an hour
+    finally:
+        app.dependency_overrides.pop(get_now, None)

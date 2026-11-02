@@ -13,8 +13,9 @@ const MOTION: Record<OrbState, { spin: number; core: number; pulse: number; rate
   speaking: { spin: 1.4, core: 0.7, pulse: 0.2, rate: 9, breath: 0.02, ripple: 0.45, bright: 1.25 },
 }
 
-/** The animated hologram (the user's reference images). Decorative; `state` mirrors the assistant. */
-export default function Orb({ className, state = 'idle', hero = false, compact = false }: { className?: string; state?: OrbState; hero?: boolean; compact?: boolean }) {
+/** The animated hologram (the user's reference images). Decorative; `state` mirrors the assistant.
+ *  `bleed`: px of canvas above the orb's own box (so rings can run behind a title); the orb stays framed in the box. */
+export default function Orb({ className, state = 'idle', hero = false, compact = false, bleed = 0 }: { className?: string; state?: OrbState; hero?: boolean; compact?: boolean; bleed?: number }) {
   const host = useRef<HTMLDivElement>(null)
   const stateRef = useRef(state)
   const redraw = useRef<() => void>(undefined)
@@ -82,7 +83,9 @@ export default function Orb({ className, state = 'idle', hero = false, compact =
       const { width, height } = el.getBoundingClientRect()
       if (!width || !height) return
       renderer.setSize(width, height, false)
-      camera.aspect = width / height || 1
+      const framed = Math.max(1, height - bleed)
+      camera.aspect = width / framed
+      if (bleed) camera.setViewOffset(width, framed, 0, -bleed, width, height)
       camera.updateProjectionMatrix()
       if (reduced()) frame() // resizing clears the canvas; with no loop running, draw the still frame again
     }
@@ -136,7 +139,7 @@ export default function Orb({ className, state = 'idle', hero = false, compact =
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [hero, compact])
+  }, [hero, compact, bleed])
 
   return (
     <div ref={host} aria-hidden data-state={state} className={cx('orb relative', hero && 'orb-hero', className)} data-quality={compact ? 'mark' : hero ? 'hero' : 'standard'}>

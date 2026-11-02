@@ -12,6 +12,8 @@ os.environ.setdefault("PEACE_DATABASE_URL", "postgresql+psycopg://peace@127.0.0.
 os.environ.setdefault("PEACE_API_TOKEN", "test-token-" + "x" * 32)
 os.environ.setdefault("MOODLE_URL", "https://moodle.example.pt/moodle")
 os.environ.setdefault("INFORESTUDANTE_URL", "https://inforestudante.example.pt/nonio")
+os.environ.setdefault("PEACE_ACADEMIC_DOMAINS", "escola.example.pt,politecnico.example.pt")
+os.environ.setdefault("PEACE_BACKUP_DIR", "/nonexistent/peace-backups")  # never the real backups
 
 from peace.api import app  # noqa: E402
 from peace.config import database_url  # noqa: E402

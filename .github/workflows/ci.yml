@@ -47,13 +47,18 @@ jobs:
       - name: Installer parses and passes the script analyzer
         shell: pwsh
         run: |
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors)
-          if ($errors) { $errors | Format-List; exit 1 }
+          foreach ($script in 'install.ps1', 'scripts\remote-access.ps1') {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\$script", [ref]$null, [ref]$errors)
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
           $issues = Invoke-ScriptAnalyzer install.ps1 -Severity Error, Warning -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions, PSUseBOMForUnicodeEncodedFile, PSAvoidUsingInvokeExpression
           $issues | Format-Table -AutoSize
           if ($issues) { exit 1 }
+      - name: The installer recommends the right AI model
+        shell: powershell  # Windows PowerShell 5.1, what `irm | iex` runs in on a new PC
+        run: .\tests\install_choice.ps1
       - name: PostgreSQL for the test suite (preinstalled, stopped)
         shell: pwsh
         run: |

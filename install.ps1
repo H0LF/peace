@@ -1,8 +1,8 @@
 # PEACE on Windows 10/11, in one command (PowerShell):
 #   irm https://raw.githubusercontent.com/H0LF/peace/main/install.ps1 | iex
 #
-# Installs what is missing (WSL 2, Docker Desktop, Ollama, uv), picks the language model this PC can run, starts
-# PEACE in Docker and the desktop agent at every sign-in, then opens the dashboard already signed in.
+# Looks at this PC and lets you choose the AI model (with a recommendation), installs what is missing (WSL 2, Docker
+# Desktop, Ollama, uv), starts PEACE in Docker and the desktop agent at every sign-in, then opens the dashboard signed in.
 # Windows asks for permission (UAC) for WSL and Docker. If it needs a restart, this script runs again by itself
 # after you sign in. Safe to run again: it updates PEACE and keeps your data and settings.
 
@@ -33,6 +33,34 @@ function Register-Resume {
     Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'PEACE install' -Value $command
 }
 
+# What the assistant can run, best first: only models that can pick commands (tool calling), like llm.PREFERRED.
+function Get-ModelChoice($VramGB, $RamGB, $FreeGB) {
+    $spare = $FreeGB - 15  # shortcut: ~15 GB for Docker, PEACE and the voice models, measure on a clean PC if it is tight
+    @(
+        @{ Model = 'gpt-oss:20b'; SizeGB = 13; Label = 'o melhor; precisa de placa gráfica com 14 GB'; Fits = ($VramGB -ge 14) }
+        @{ Model = 'qwen3:8b'; SizeGB = 5.2; Label = 'muito bom; 7 GB de placa gráfica ou 32 GB de RAM'; Fits = ($VramGB -ge 7 -or $RamGB -ge 32) }
+        @{ Model = 'qwen3:4b'; SizeGB = 2.6; Label = 'equilibrado; 12 GB de RAM'; Fits = ($RamGB -ge 12) }
+        @{ Model = 'llama3.2:3b'; SizeGB = 2; Label = 'leve, para portáteis modestos; 6 GB de RAM'; Fits = ($RamGB -ge 6) }
+        @{ Model = ''; SizeGB = 0; Label = 'sem modelo: a PEACE responde com frases fixas'; Fits = $true }
+    ) | ForEach-Object { $_.Room = ($_.SizeGB -le $spare -or -not $_.Model); [pscustomobject]$_ }
+}
+function Get-RecommendedChoice($choices) { @($choices | Where-Object { $_.Fits -and $_.Room })[0] }
+# One key picks an option; Enter or the time limit takes the recommendation, so the install never waits for an answer.
+function Read-Choice($allowed, $default, $seconds) {
+    try {
+        $deadline = (Get-Date).AddSeconds($seconds)
+        while ((Get-Date) -lt $deadline) {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq 'Enter') { return $default }
+                if ($allowed -contains "$($key.KeyChar)") { return [int]"$($key.KeyChar)" }
+            }
+            [Threading.Thread]::Sleep(100)
+        }
+    } catch { return $default }  # no console to read from
+    $default
+}
+
 function Install-Peace {
 # --- 0. Windows and winget -------------------------------------------------------------------------------
 if ([Environment]::OSVersion.Version.Build -lt 19044) { Fail 'A PEACE precisa do Windows 10 21H2 ou mais recente (ou do Windows 11).' }
@@ -40,6 +68,45 @@ if (-not (Have winget)) {
     Fail 'Falta o winget. Instala o «Instalador de Aplicações» (App Installer) a partir da Microsoft Store e corre este comando outra vez.'
 }
 New-Item -ItemType Directory -Force -Path $PeaceHome, $Secrets | Out-Null
+[Console]::OutputEncoding = $NoBom
+
+# --- 0. This PC, and which AI model to use (asked once, before the long part, and kept across restarts) -----------
+# Video memory: the registry holds the real 64-bit size (WMI's AdapterRAM stops at 4 GB).
+$Vram = 0
+Get-ChildItem 'HKLM:\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue | ForEach-Object {
+    $size = (Get-ItemProperty $_.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'
+    if ($size -and [double]$size -gt $Vram) { $Vram = [double]$size }
+}
+$VramGB = [math]::Round($Vram / 1GB, 1)
+$RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+$FreeGB = [math]::Round((Get-PSDrive $env:SystemDrive.TrimEnd(':')).Free / 1GB, 1)
+$Threads = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
+$Stt = if ($Threads -ge 12) { 'medium' } else { 'small' }
+
+$ModelFile = Join-Path $PeaceHome 'model.txt'
+if (Test-Path $ModelFile) {
+    $Model = (Get-Content $ModelFile -Raw).Trim()
+    if ($Model -eq 'none') { $Model = '' }
+} else {
+    $choices = @(Get-ModelChoice $VramGB $RamGB $FreeGB)
+    $best = Get-RecommendedChoice $choices
+    Say "Este PC: $VramGB GB de placa gráfica, $RamGB GB de RAM, $FreeGB GB livres em disco."
+    Write-Host 'Que modelo de IA queres para o assistente? Fica tudo neste PC.'
+    $allowed = @()
+    for ($i = 0; $i -lt $choices.Count; $i++) {
+        $c = $choices[$i]
+        $note = if (-not $c.Room) { ' [sem espaço em disco]' } elseif ($c -eq $best) { ' [RECOMENDADO]' } elseif (-not $c.Fits) { ' [ficaria lento neste PC]' } else { '' }
+        if ($c.Room) { $allowed += "$($i + 1)" }
+        $name = if ($c.Model) { "$($c.Model), $($c.SizeGB) GB" } else { 'Nenhum' }
+        Write-Host "  $($i + 1). $name - $($c.Label)$note"
+    }
+    $default = [array]::IndexOf($choices, $best) + 1
+    Write-Host "Carrega no número. Enter ou 30 segundos: opção $default. Podes juntar outro modelo mais tarde."
+    Write-Host 'Ao continuar, aceitas também os termos do Docker Desktop: https://www.docker.com/legal/docker-subscription-service-agreement'
+    $Model = $choices[(Read-Choice $allowed $default 30) - 1].Model
+    Write-TextFile $ModelFile @($(if ($Model) { $Model } else { 'none' }))
+}
+Say "Modelo do assistente: $(if ($Model) { $Model } else { 'nenhum' }). Reconhecimento de voz: Whisper $Stt."
 
 # --- 1. WSL 2 (Docker runs PEACE's server inside it) --------------------------------------------------------
 wsl.exe --status *> $null
@@ -59,7 +126,7 @@ if ($LASTEXITCODE -ne 0) {
 $DockerExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
 if (-not (Test-Path $DockerExe)) {
     Say 'A instalar o Docker Desktop (o Windows vai pedir autorização)…'
-    winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements --silent
+    winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements --override 'install --quiet --accept-license --backend=wsl-2'
     if (-not (Test-Path $DockerExe)) { Fail 'O Docker Desktop não ficou instalado. Instala-o em https://www.docker.com/products/docker-desktop e corre este comando outra vez.' }
     Register-Resume
     Write-Host "`nO Docker Desktop precisa que termines a sessão do Windows (ou reinicies). A instalação continua sozinha depois." -ForegroundColor Yellow
@@ -75,43 +142,28 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { Fail 'O Docker não arrancou. Abre o Docker Desktop, aceita os termos, espera que diga «Engine running» e corre este comando outra vez.' }
 }
 
-# --- 3. Ollama and the model this PC can run -------------------------------------------------------------------
-if (-not (Have ollama)) {
-    Say 'A instalar o Ollama (o modelo de linguagem local)…'
-    winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements --silent
-    Update-SessionPath
-}
-if (-not (Have ollama)) { Fail 'O Ollama não ficou instalado. Instala-o em https://ollama.com e corre este comando outra vez.' }
-$OllamaUp = $false
-for ($i = 0; $i -lt 30 -and -not $OllamaUp; $i++) {
-    try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:11434/api/tags -TimeoutSec 2 | Out-Null; $OllamaUp = $true }
-    catch { if ($i -eq 0) { Start-Process ollama -ArgumentList 'serve' -WindowStyle Hidden }; Start-Sleep 2 }
-}
-
-# Video memory: the registry holds the real 64-bit size (WMI's AdapterRAM stops at 4 GB).
-$Vram = 0
-Get-ChildItem 'HKLM:\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue | ForEach-Object {
-    $size = (Get-ItemProperty $_.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'
-    if ($size -and [double]$size -gt $Vram) { $Vram = [double]$size }
-}
-$VramGB = [math]::Round($Vram / 1GB, 1)
-$RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
-$Threads = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
-# The assistant needs a model that can pick commands (tool calling): the biggest one this PC runs well.
-if ($VramGB -ge 14) { $Model = 'gpt-oss:20b'; $Why = "placa gráfica com $VramGB GB" }
-elseif ($VramGB -ge 7 -or $RamGB -ge 32) { $Model = 'qwen3:8b'; $Why = "$VramGB GB de placa gráfica, $RamGB GB de RAM" }
-elseif ($RamGB -ge 12) { $Model = 'qwen3:4b'; $Why = "$RamGB GB de RAM, sem placa gráfica dedicada suficiente" }
-else { $Model = 'llama3.2:3b'; $Why = "só $RamGB GB de RAM" }
-$Stt = if ($Threads -ge 12) { 'medium' } else { 'small' }
-Say "Modelo do assistente: $Model ($Why). Reconhecimento de voz: Whisper $Stt."
-if ($OllamaUp) {
-    $installed = @((Invoke-RestMethod http://127.0.0.1:11434/api/tags).models | ForEach-Object { $_.name })
-    if ($installed -notcontains $Model) {
-        Say "A descarregar $Model (pode demorar; só acontece uma vez)…"
-        ollama pull $Model
+# --- 3. Ollama and the chosen model (nothing at all if the user chose none) ---------------------------------------
+if ($Model) {
+    if (-not (Have ollama)) {
+        Say 'A instalar o Ollama (o modelo de linguagem local)…'
+        winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements --silent
+        Update-SessionPath
     }
-} else {
-    Write-Host 'O Ollama não respondeu: a PEACE funciona sem modelo (frases fixas). Em Definições > Assistente vês quando ficar disponível.' -ForegroundColor Yellow
+    if (-not (Have ollama)) { Fail 'O Ollama não ficou instalado. Instala-o em https://ollama.com e corre este comando outra vez.' }
+    $OllamaUp = $false
+    for ($i = 0; $i -lt 30 -and -not $OllamaUp; $i++) {
+        try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:11434/api/tags -TimeoutSec 2 | Out-Null; $OllamaUp = $true }
+        catch { if ($i -eq 0) { Start-Process ollama -ArgumentList 'serve' -WindowStyle Hidden }; Start-Sleep 2 }
+    }
+    if ($OllamaUp) {
+        $installed = @((Invoke-RestMethod http://127.0.0.1:11434/api/tags).models | ForEach-Object { $_.name })
+        if ($installed -notcontains $Model) {
+            Say "A descarregar $Model (pode demorar; só acontece uma vez)…"
+            ollama pull $Model
+        }
+    } else {
+        Write-Host 'O Ollama não respondeu: a PEACE funciona sem modelo (frases fixas). Em Definições > Assistente vês quando ficar disponível.' -ForegroundColor Yellow
+    }
 }
 
 # --- 4. PEACE itself ------------------------------------------------------------------------------------------
@@ -134,6 +186,9 @@ if (-not (Test-Path $EnvFile) -or -not (Select-String -Path $EnvFile -Pattern '^
     Write-TextFile $EnvFile @("PEACE_API_TOKEN=$(New-Secret)")
 }
 $Token = ((Get-Content $EnvFile | Where-Object { $_ -like 'PEACE_API_TOKEN=*' }) -split '=', 2)[1]
+# The model the user chose, even if a bigger one was already on this PC. Settings > Assistente can still change it.
+$kept = @(Get-Content $EnvFile | Where-Object { $_ -notlike 'PEACE_LLM_MODEL=*' })
+Write-TextFile $EnvFile ($kept + @($(if ($Model) { "PEACE_LLM_MODEL=$Model" })))
 Write-TextFile (Join-Path $App '.env') @("PEACE_ENV_FILE=$EnvFile", "PEACE_DB_PASSWORD_FILE=$DbPassword", "PEACE_STT_MODEL=$Stt")
 
 Say 'A preparar os serviços da PEACE no Docker (na primeira vez demora alguns minutos)…'
@@ -178,6 +233,7 @@ Start-Process $link.TargetPath -ArgumentList $link.Arguments -WorkingDirectory $
 # --- Done -------------------------------------------------------------------------------------------------
 Start-Process "http://127.0.0.1:8420/entrar#token=$Token"
 Write-Host "`nA PEACE está instalada e aberta no browser." -ForegroundColor Green
+Write-Host "Para a usar também noutro portátil ou no telemóvel: powershell -ExecutionPolicy Bypass -File `"$App\scripts\remote-access.ps1`""
 Write-Host 'Em Definições > Integrações escreve o endereço da plataforma da tua universidade (Moodle e/ou Nónio),'
 Write-Host 'o utilizador e a palavra-passe, e carrega em «Sincronizar».'
 Write-Host "Token de acesso (para outro browser): $Token"

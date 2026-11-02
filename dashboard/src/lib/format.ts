@@ -1,5 +1,7 @@
 // pt-PT formatting. Dates are shown in the browser's local time (the desktop runs in Europe/Lisbon).
 
+import type { ExamState } from './api'
+
 const LOCALE = 'pt-PT'
 const timeFmt = new Intl.DateTimeFormat(LOCALE, { hour: '2-digit', minute: '2-digit' })
 const longDayFmt = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })
@@ -115,3 +117,12 @@ export const fromLocalInput = (value: string) => (value ? new Date(value).toISOS
 
 /** Stable, readable colour per course. */
 export const courseHue = (id: number) => (id * 137) % 360
+export const megabytes = (bytes: number) => (bytes >= 2 ** 20 ? `${(bytes / 2 ** 20).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`)
+
+export const EXAM_STATE: Record<ExamState, [string, 'neutral' | 'warn' | 'ok' | 'danger' | 'accent']> = {
+  new: ['por ler', 'neutral'],
+  reading: ['a ler…', 'accent'],
+  review: ['por confirmar', 'warn'],
+  confirmed: ['confirmado', 'ok'],
+  error: ['erro', 'danger'],
+}

@@ -119,14 +119,25 @@ export async function handle(api, msg) {
   }
 }
 
+export const MAX_DELAY = 20000  // below the ~30 s an idle MV3 service worker lives: a later timer would never fire
+let live = null
+
 export function connect(api, delay = 1000) {
-  const port = api.runtime.connectNative(HOST)
+  if (live) return live  // startup, install and the top level may all ask: one port
+  const port = live = api.runtime.connectNative(HOST)
   port.onMessage.addListener(async (msg) => port.postMessage(await handle(api, msg)))
-  // The host exits when Brave closes the port or it fails: reconnect, slower each time (at most every minute).
-  port.onDisconnect.addListener(() => setTimeout(() => connect(api, Math.min(delay * 2, 60000)), delay))
+  // The host exits when Brave closes the port or it fails: reconnect, slower each time (at most every 20 s).
+  port.onDisconnect.addListener(() => {
+    live = null
+    setTimeout(() => connect(api, Math.min(delay * 2, MAX_DELAY)), delay)
+  })
   return port
 }
 
+// An MV3 service worker only runs for an event it listens to: without these, after Brave restarts nothing starts
+// it, the host never runs and the agent reports browser: false. An open native port then keeps it alive.
 if (globalThis.chrome?.runtime?.connectNative) {
+  globalThis.chrome.runtime.onStartup.addListener(() => connect(globalThis.chrome))
+  globalThis.chrome.runtime.onInstalled.addListener(() => connect(globalThis.chrome))
   connect(globalThis.chrome)
 }

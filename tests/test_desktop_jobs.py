@@ -109,6 +109,7 @@ def test_study_workspace_plans_layout_course_files_and_the_course_page(client, s
     r = ask(client, "Peace, vamos estudar Sistemas Operativos")
     assert r["intent"] == "study_workspace" and r["job"]["state"] == "pending" and r["to"] == f"/cadeiras/{course.id}"
     assert [i["vault_path"] for i in r["items"]] == ["Cadeiras/SO/escalonamento.pdf"]
+    assert "Modo foco ligado" in r["reply"] and client.get("/api/v1/assistant/status").json()["focus"]["active"]
     claimed = client.get("/api/v1/desktop/jobs/next").json()
     assert claimed["steps"] == [
         {"tool": "layouts.apply", "args": {"name": "estudo"}},
@@ -129,6 +130,14 @@ def test_study_workspace_plans_layout_course_files_and_the_course_page(client, s
 def test_an_unknown_course_plans_nothing(client, session, connected, course):
     r = ask(client, "vamos estudar astrofísica")
     assert r["job"] is None and r["reply"] == "Não encontrei a cadeira «astrofisica»."
+    assert not client.get("/api/v1/assistant/status").json()["focus"]["active"]
+
+
+def test_scenario_b_tabs_and_coding_windows_in_one_request(client, connected):
+    r = ask(client, "Peace, organiza os meus separadores e move as janelas de programação para a segunda área de trabalho")
+    assert r["job"]["state"] == "pending" and r["job"]["steps"] == 2
+    assert client.get("/api/v1/desktop/jobs/next").json()["steps"] == [
+        {"tool": "browser.organize", "args": {}}, {"tool": "windows.gather", "args": {"name": "programacao", "workspace": 2}}]
 
 
 def test_summaries_never_claim_more_than_the_agent_verified(client, connected):

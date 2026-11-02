@@ -1,4 +1,5 @@
-import { CalendarClock, Clock, ExternalLink, MoreHorizontal, Pencil, Timer, Trash2 } from 'lucide-react'
+import { CalendarClock, Clock, ExternalLink, ListChecks, MoreHorizontal, Pencil, Timer, Trash2 } from 'lucide-react'
+import { Link } from 'react-router'
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, type Course, type Task, type TaskInput, type TaskStatus } from '../lib/api'
 import { addDays, countdown, duration, fromLocalInput, plural, startOfDay, toLocalInput, urgency, type Urgency } from '../lib/format'
@@ -110,6 +111,11 @@ export function TaskRow({ task, now, onEdit, compact = false }: { task: Task; no
           {task.status === 'BLOCKED' && <span className="text-warn">bloqueada</span>}
           {task.postponed_count > 0 && <span className="text-faint">adiada {plural(task.postponed_count, 'vez', 'vezes')}</span>}
           {task.source !== 'manual' && <span className="text-faint">{SOURCE_LABEL[task.source] ?? task.source}</span>}
+          {task.kind === 'assignment' && !done && (
+            <Link to={`/entregas/${task.id}`} className="inline-flex items-center gap-1 text-accent hover:underline">
+              <ListChecks className="size-3" /> Requisitos
+            </Link>
+          )}
         </div>
         {task.progress > 0 && !done && (
           <div className="mt-2 flex max-w-56 items-center gap-2">

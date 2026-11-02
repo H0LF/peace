@@ -1,7 +1,7 @@
 // The PEACE Brave extension's message handling, against a fake chrome API (node --test; run by test_browser_bridge.py).
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { check, connect, handle, safeUrl, webUrl } from '../desktop/brave/extension/background.js'
+import { MAX_DELAY, check, connect, handle, safeUrl, webUrl } from '../desktop/brave/extension/background.js'
 
 function fakeChrome() {
   const calls = []
@@ -103,4 +103,19 @@ test('the native port answers each message and reconnects when it drops', async 
   listeners.disconnect[0]()
   await new Promise((r) => setTimeout(r, 20))
   assert.equal(connects, 2)
+  assert.equal(connect(api, 1), connect(api, 1))  // asked again while connected: the same port
+  assert.equal(connects, 2)
+  assert.ok(MAX_DELAY < 30000)  // an idle service worker is stopped after ~30 s
+})
+
+test('the worker connects when Brave starts, not only on install', async () => {
+  const started = []
+  globalThis.chrome = { runtime: {
+    connectNative: () => ({ postMessage() {}, onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }),
+    onStartup: { addListener: (f) => started.push('startup') },
+    onInstalled: { addListener: (f) => started.push('installed') },
+  } }
+  await import('../desktop/brave/extension/background.js?fresh')
+  assert.deepEqual(started, ['startup', 'installed'])
+  delete globalThis.chrome
 })

@@ -5,7 +5,7 @@ import { ago, dayLabel, time } from '../lib/format'
 import { refreshAll } from '../lib/hooks'
 import { Badge, Button, cx, useToast } from './ui'
 
-export const SOURCE_NAME: Record<string, string> = { inforestudante: 'Inforestudante', moodle: 'Moodle' }
+export const SOURCE_NAME: Record<string, string> = { inforestudante: 'Inforestudante', moodle: 'Moodle', email: 'Email' }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export function SyncButton({ size = 'md' }: { size?: 'sm' | 'md' }) {

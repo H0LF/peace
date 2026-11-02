@@ -245,7 +245,7 @@ def graph_json(G: nx.Graph, community: dict[str, int], course_id: int | None = N
     nodes = [
         {"id": n, "label": d["label"], "kind": d["kind"], "course_id": d.get("course_id"),
          "community": community.get(n), "degree": degree[n], "vault_path": d.get("source_file") or None,
-         "note": f"{NOTES_DIR}/{notes[n]}.md"}
+         "material_id": d.get("material_id"), "note": f"{NOTES_DIR}/{notes[n]}.md"}
         for n, d in G.nodes(data=True) if n in keep
     ]
     links = [

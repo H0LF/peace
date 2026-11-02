@@ -8,7 +8,7 @@ under that lock guarantee one scheduled run per source per day, even with two wo
 import logging
 import signal
 import threading
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
@@ -18,33 +18,20 @@ from peace.config import get_settings
 from peace.db import get_engine
 from peace.logs import configure_logging
 from peace.knowledge import build_graph, communities, export_graphify
-from peace.library import fetch_pending, remove_orphans
+from peace.library import fetch_pending, mark_pages, remove_orphans
 from peace.topics import analyze_pending
+from peace import workload
 from peace.models import SyncRun
-from peace.notifications import generate
-from peace.sync import SOURCES, AlreadyRunning, run_sync
+from peace.notifications import generate, worker_alive
+from peace.phone import push_due
+from peace.journal import write_today
+from peace import google_calendar, mail, mail_extract, practice, requirements
+from peace.sync import RUN_AT, SOURCES, AlreadyRunning, last_slot, next_slot, run_sync  # noqa: F401 (slots re-exported)
 
 log = logging.getLogger(__name__)
-RUN_AT = time(2, 0)
 RETRY_AFTER = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
 EXPORT_EVERY = timedelta(minutes=30)
-
-
-def last_slot(now: datetime, tz: ZoneInfo) -> datetime:
-    local = now.astimezone(tz)
-    slot = datetime.combine(local.date(), RUN_AT, tz)
-    if slot > local:
-        slot = datetime.combine(local.date() - timedelta(days=1), RUN_AT, tz)
-    return slot.astimezone(UTC)
-
-
-def next_slot(now: datetime, tz: ZoneInfo) -> datetime:
-    local = now.astimezone(tz)
-    slot = datetime.combine(local.date(), RUN_AT, tz)
-    if slot <= local:
-        slot = datetime.combine(local.date() + timedelta(days=1), RUN_AT, tz)
-    return slot.astimezone(UTC)
 
 
 def is_due(session: Session, source: str, now: datetime, tz: ZoneInfo) -> bool:
@@ -76,10 +63,50 @@ def tick(tz: ZoneInfo) -> None:
         except AlreadyRunning:
             log.info("sync %s already running; will check again", source)
     with Session(get_engine()) as session:
+        worker_alive(session, datetime.now(UTC))
         if made := generate(session, datetime.now(UTC), tz):
             log.info("created %d notifications", made)
         session.commit()
+        if pushed := push_due(session, datetime.now(UTC)):
+            log.info("sent %d notifications to the phone", pushed)
+        try:
+            write_today(session, datetime.now(UTC), tz)
+        except OSError as e:
+            log.warning("daily note not written: %s", e)
         refresh_knowledge(session, datetime.now(UTC))
+        check_mail(session, datetime.now(UTC))
+        try:
+            if read := requirements.revised_briefs(session, datetime.now(UTC)):  # only while the model is reachable
+                log.info("read %d revised assignment briefs again", read)
+        except Exception:
+            session.rollback()
+            log.exception("re-reading revised briefs failed")
+        practise(session, datetime.now(UTC))
+
+
+def practise(session: Session, now: datetime) -> None:
+    """Mark written answers left waiting for the model, then add questions to the bank (phase 7, while the model may load)."""
+    try:
+        if marked := practice.grade_waiting(session, now):
+            log.info("marked %d written answers", marked)
+        if made := practice.generate_due(session, now):
+            log.info("wrote %d practice questions (kept and discarded)", made)
+    except Exception:
+        session.rollback()
+        log.exception("practice questions failed")  # the next tick retries
+
+
+def check_mail(session: Session, now: datetime) -> None:
+    """Read the university mailbox every 15 minutes and offer the weekly cleanup (phase 4)."""
+    try:
+        mail.run(session, now)
+        if mail.offer_cleanup(session, now):
+            session.commit()
+        if made := mail_extract.extract_pending(session, now):  # only while the model is reachable
+            log.info("found %d dates in university emails", made)
+    except Exception:
+        session.rollback()
+        log.exception("mail check failed")  # the next tick retries; nothing else depends on it
 
 
 _last_export: dict[str, datetime] = {}  # per-process; a restart simply exports again
@@ -92,8 +119,12 @@ def refresh_knowledge(session: Session, now: datetime) -> None:
         if fetched:
             log.info("analyzed %d course files", fetched)
             remove_orphans(session)
+        if marked := mark_pages(session):
+            log.info("added page marks to %d course files", marked)
         if read := analyze_pending(session, now):  # only while the desktop's model is reachable
             log.info("read topics of %d course files", read)
+        if read := workload.analyze_pending(session, now):
+            log.info("read %d project briefs or exam guides", read)
         last = _last_export.get("at")
         if fetched or last is None or now - last >= EXPORT_EVERY:
             G = build_graph(session, now)
@@ -112,6 +143,7 @@ def main() -> None:
     with Session(get_engine()) as session:
         recover_interrupted(session, datetime.now(UTC))
     log.info("worker started; next scheduled sync at %s", next_slot(datetime.now(UTC), tz).isoformat())
+    threading.Thread(target=google_calendar.run_forever, args=(stop,), name="google-calendar", daemon=True).start()
     while not stop.is_set():
         try:
             tick(tz)

@@ -192,7 +192,7 @@
     radial-gradient(ellipse 40% 14% at 52% 80%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
 }
 .orb-hero {
-  mask-image: linear-gradient(to bottom, black 80%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, black 12%, black 80%, transparent);
 }
 .state-arc {
   transform-origin: 50% 50%;
@@ -313,5 +313,145 @@
   *::after {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
+  }
+}
+
+/* Holo Hands: the Hand cursor, a glow in the accent colour at the index fingertip; smaller while pressing. */
+.holo-cursor {
+  background: radial-gradient(circle, var(--accent) 0 28%, color-mix(in oklab, var(--accent) 45%, transparent) 46%, transparent 72%);
+  box-shadow: 0 0 18px 6px color-mix(in oklab, var(--accent) 45%, transparent);
+  transition: opacity 0.2s, scale 0.12s;
+}
+.holo-cursor[data-pressed] {
+  scale: 0.7;
+}
+
+/* Main page: cards piled behind the current one (see components/deck.tsx). */
+.deck {
+  perspective: 1400px;
+}
+.deck-card {
+  transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.5s ease, filter 0.5s ease;
+  will-change: transform;
+}
+.deck-card[data-active="true"] .face-in {
+  animation: face-in 0.6s 0.15s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+@keyframes face-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+}
+.card-sweep {
+  position: absolute;
+  inset: -20% auto -20% -40%;
+  width: 30%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent);
+  animation: card-sweep 1.1s 0.15s ease-out forwards;
+  pointer-events: none;
+}
+@keyframes card-sweep {
+  to {
+    left: 120%;
+  }
+}
+
+/* Engineering wallpapers; only the shown card moves. */
+.wp-flow {
+  stroke-dasharray: 8 92;
+  animation: wp-flow 6s linear infinite;
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+@keyframes wp-flow {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+.wp-pulse {
+  animation: wp-pulse 4s ease-in-out infinite;
+}
+@keyframes wp-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+.wp-rain {
+  animation: wp-rain 10s linear infinite;
+}
+@keyframes wp-rain {
+  from {
+    transform: translateY(-720px);
+  }
+  to {
+    transform: translateY(720px);
+  }
+}
+[inert] .wp * {
+  animation-play-state: paused;
+}
+
+/* Talking to PEACE. */
+.voice-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.voice-bars i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  animation: voice-bar 0.8s ease-in-out infinite;
+}
+@keyframes voice-bar {
+  0%, 100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.voice-cue[data-voice="thinking"] .voice-bars i {
+  animation-duration: 1.6s;
+}
+.orb-hero::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+.orb-hero[data-state="listening"]::after,
+.orb-hero[data-state="speaking"]::after {
+  animation: voice-ring 1.6s ease-out infinite;
+}
+@keyframes voice-ring {
+  from {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(0.75);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.3);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-card {
+    transition: opacity 0.2s;
+  }
+  .wp-flow, .wp-pulse, .wp-rain, .card-sweep, .voice-bars i, .deck-card .face-in, .orb-hero::after {
+    animation: none !important;
+  }
+  .card-sweep {
+    display: none;
   }
 }

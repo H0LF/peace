@@ -1,8 +1,8 @@
 import { ChevronLeft, ChevronRight, ExternalLink, MapPin, Plus } from 'lucide-react'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import { Badge, Button, CourseTag, Dialog, ErrorNote, Field, Input, PageHeader, Segmented, Select, courseColor, cx, useToast } from '../components/ui'
-import { api, type CalEvent, type Course, type StudySession, type Task } from '../lib/api'
+import { api, type CalEvent, type Course, type EventKind, type StudySession, type Task } from '../lib/api'
 import { addDays, dayKey, dayMonth, fromLocalInput, longDay, monthTitle, sameDay, startOfDay, startOfWeek, time, toLocalInput, weekday } from '../lib/format'
 import { refreshAll, useApi, useNow } from '../lib/hooks'
 
@@ -24,6 +24,7 @@ type Item = {
   url?: string | null
   note?: string
   source?: string
+  event?: CalEvent
 }
 
 const KIND_LABEL: Record<Kind, string> = { class: 'Aulas', exam: 'Avaliações', appointment: 'Compromissos', session: 'Estudo', deadline: 'Prazos' }
@@ -42,6 +43,7 @@ function toItems(events: CalEvent[], sessions: StudySession[], tasks: Task[]): I
       location: e.location,
       url: e.url,
       source: e.source,
+      event: e,
     })),
     ...sessions
       .filter((s) => s.status !== 'skipped')
@@ -100,7 +102,13 @@ function lanes(items: Item[]) {
   return out
 }
 
-function Block({ item, onOpen }: { item: Item & { lane: number; lanes: number }; onOpen: (i: Item) => void }) {
+function Block({ item, onOpen, onGrab, onHover, ghost }: {
+  item: Item & { lane: number; lanes: number }
+  onOpen: (i: Item) => void
+  onGrab?: (e: ReactPointerEvent, i: Item) => void
+  onHover?: (i: Item | null) => void
+  ghost?: boolean
+}) {
   const startH = item.start.getHours() + item.start.getMinutes() / 60
   const endH = Math.min(LAST_HOUR + 1, item.end.getHours() + item.end.getMinutes() / 60 || 24)
   const top = (Math.max(startH, FIRST_HOUR) - FIRST_HOUR) * HOUR_PX
@@ -110,8 +118,17 @@ function Block({ item, onOpen }: { item: Item & { lane: number; lanes: number };
     <button
       type="button"
       onClick={() => onOpen(item)}
+      onPointerDown={onGrab && ((e) => onGrab(e, item))}
+      onPointerEnter={onHover && (() => onHover(item))}
+      onPointerLeave={onHover && (() => onHover(null))}
+      onFocus={onHover && (() => onHover(item))}
+      onBlur={onHover && (() => onHover(null))}
       title={`${item.title} · ${time(item.start)}–${time(item.end)}${item.location ? ` · ${item.location}` : ''}`}
-      className="absolute overflow-hidden rounded-lg border-l-[3px] px-2 py-1 text-left text-[11.5px] leading-tight transition-[filter] hover:brightness-125"
+      className={cx(
+        'absolute overflow-hidden rounded-lg border-l-[3px] px-2 py-1 text-left text-[11.5px] leading-tight transition-[filter] hover:brightness-125',
+        onGrab && 'cursor-grab touch-none active:cursor-grabbing',
+        ghost && 'pointer-events-none z-20 opacity-80 shadow-lg ring-1 ring-accent',
+      )}
       style={{
         top,
         height,
@@ -132,9 +149,85 @@ function Block({ item, onOpen }: { item: Item & { lane: number; lanes: number };
   )
 }
 
-function TimeGrid({ days, items, now, onOpen }: { days: Date[]; items: Item[]; now: Date; onOpen: (i: Item) => void }) {
+const SNAP_MIN = 15
+const DRAG_PX = 4 // less than this is a click, not a drag
+
+/** The day column under the pointer and the time at its height, snapped to 15 minutes. */
+function slotAt(x: number, y: number, days: Date[]): Date | null {
+  const col = document.elementsFromPoint(x, y).find((el) => (el as HTMLElement).dataset.day) as HTMLElement | undefined
+  if (!col) return null
+  const day = days[Number(col.dataset.day)]
+  const minutes = Math.round((((y - col.getBoundingClientRect().top) / HOUR_PX) * 60) / SNAP_MIN) * SNAP_MIN
+  const clamped = Math.min(Math.max(minutes, 0), (LAST_HOUR + 1 - FIRST_HOUR) * 60 - SNAP_MIN)
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), FIRST_HOUR, clamped)
+}
+
+/** Pointer capture, when the pointer really exists (Holo Hands sends mouse-shaped events that may not). */
+function capture(el: Element, pointerId: number) {
+  try {
+    el.setPointerCapture(pointerId)
+  } catch {
+    /* synthetic pointer: events are sent to this element anyway */
+  }
+}
+
+type Drag =
+  | { mode: 'create'; from: Date; to: Date; x: number; y: number; moved: boolean }
+  | { mode: 'move'; item: Item; grab: number; start: Date; x: number; y: number; moved: boolean }
+
+/** Week/day grid. Double-click or drag on free space creates an event; dragging an event moves it (snaps to 15 min). */
+function TimeGrid({ days, items, now, onOpen, onCreate, onMove, onHover }: {
+  days: Date[]
+  items: Item[]
+  now: Date
+  onOpen: (i: Item) => void
+  onHover: (i: Item | null) => void
+  onCreate: (start: Date, end: Date) => void
+  onMove: (i: Item, start: Date, end: Date) => void
+}) {
   const hours = Array.from({ length: LAST_HOUR - FIRST_HOUR + 1 }, (_, i) => FIRST_HOUR + i)
   const cols = `56px repeat(${days.length}, minmax(0, 1fr))`
+  const [drag, setDrag] = useState<Drag | null>(null)
+  const dragged = useRef(false) // swallows the click that ends a drag
+
+  function startCreate(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.button !== 0 || e.target !== e.currentTarget && !(e.target as HTMLElement).dataset.slot) return
+    const at = slotAt(e.clientX, e.clientY, days)
+    if (!at) return
+    capture(e.currentTarget, e.pointerId)
+    setDrag({ mode: 'create', from: at, to: at, x: e.clientX, y: e.clientY, moved: false })
+  }
+  function grab(e: ReactPointerEvent, item: Item) {
+    if (e.button !== 0) return
+    const at = slotAt(e.clientX, e.clientY, days)
+    if (!at) return
+    capture(e.currentTarget as HTMLElement, e.pointerId)
+    setDrag({ mode: 'move', item, grab: at.getTime() - item.start.getTime(), start: item.start, x: e.clientX, y: e.clientY, moved: false })
+  }
+  function move(e: ReactPointerEvent) {
+    if (!drag) return
+    const moved = drag.moved || Math.hypot(e.clientX - drag.x, e.clientY - drag.y) >= DRAG_PX
+    const at = slotAt(e.clientX, e.clientY, days)
+    if (!at) return setDrag({ ...drag, moved })
+    if (drag.mode === 'create') setDrag({ ...drag, to: at, moved })
+    else setDrag({ ...drag, start: new Date(at.getTime() - drag.grab), moved })
+  }
+  function end() {
+    if (!drag) return
+    setDrag(null)
+    if (!drag.moved) return
+    dragged.current = true
+    setTimeout(() => (dragged.current = false))
+    if (drag.mode === 'create') {
+      const [a, b] = drag.from <= drag.to ? [drag.from, drag.to] : [drag.to, drag.from]
+      onCreate(a, new Date(b.getTime() + SNAP_MIN * 60_000))
+    } else if (drag.start.getTime() !== drag.item.start.getTime()) {
+      onMove(drag.item, drag.start, new Date(drag.start.getTime() + drag.item.end.getTime() - drag.item.start.getTime()))
+    }
+  }
+  const open = (i: Item) => !dragged.current && onOpen(i)
+  const movable = (i: Item) => !!i.event && i.event.source !== 'google'
+
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-surface">
       <div className="grid border-b border-line" style={{ gridTemplateColumns: cols }}>
@@ -164,7 +257,7 @@ function TimeGrid({ days, items, now, onOpen }: { days: Date[]; items: Item[]; n
         })}
       </div>
       <div className="max-h-[calc(100dvh-260px)] min-h-[420px] overflow-y-auto pt-2">
-        <div className="relative grid" style={{ gridTemplateColumns: cols }}>
+        <div className="relative grid select-none" style={{ gridTemplateColumns: cols }} onPointerMove={move} onPointerUp={end} onPointerCancel={() => setDrag(null)}>
           <div>
             {hours.map((h) => (
               <div key={h} className="num relative text-right text-[10.5px] text-faint" style={{ height: HOUR_PX }}>
@@ -176,13 +269,46 @@ function TimeGrid({ days, items, now, onOpen }: { days: Date[]; items: Item[]; n
             const isToday = sameDay(d, now)
             const nowTop = (now.getHours() + now.getMinutes() / 60 - FIRST_HOUR) * HOUR_PX
             return (
-              <div key={d.toISOString()} className={cx('relative border-l border-line', isToday && 'bg-accent/[0.03]')}>
+              <div
+                key={d.toISOString()}
+                data-day={days.indexOf(d)}
+                onPointerDown={startCreate}
+                onDoubleClick={(e) => {
+                  if (e.target !== e.currentTarget && !(e.target as HTMLElement).dataset.slot) return
+                  const at = slotAt(e.clientX, e.clientY, days)
+                  if (at) onCreate(at, new Date(at.getTime() + 3_600_000))
+                }}
+                className={cx('relative cursor-cell border-l border-line', isToday && 'bg-accent/[0.03]')}
+              >
                 {hours.map((h) => (
-                  <div key={h} className="border-t border-line/60" style={{ height: HOUR_PX }} />
+                  <div key={h} data-slot className="border-t border-line/60" style={{ height: HOUR_PX }} />
                 ))}
                 {lanes(items.filter((i) => i.kind !== 'deadline' && sameDay(i.start, d))).map((it) => (
-                  <Block key={it.id} item={it} onOpen={onOpen} />
+                  <Block
+                    key={it.id}
+                    item={it}
+                    onOpen={open}
+                    onGrab={movable(it) ? grab : undefined}
+                    onHover={onHover}
+                  />
                 ))}
+                {drag?.mode === 'move' && drag.moved && sameDay(drag.start, d) && (
+                  <Block
+                    ghost
+                    item={{ ...drag.item, start: drag.start, end: new Date(drag.start.getTime() + drag.item.end.getTime() - drag.item.start.getTime()), lane: 0, lanes: 1 }}
+                    onOpen={() => undefined}
+                  />
+                )}
+                {drag?.mode === 'create' && drag.moved && sameDay(drag.from, d) && (() => {
+                  const [a, b] = drag.from <= drag.to ? [drag.from, drag.to] : [drag.to, drag.from]
+                  const top = ((a.getHours() - FIRST_HOUR) * 60 + a.getMinutes()) * (HOUR_PX / 60)
+                  const height = ((b.getTime() - a.getTime()) / 60_000 + SNAP_MIN) * (HOUR_PX / 60)
+                  return (
+                    <div aria-hidden className="pointer-events-none absolute inset-x-1 z-20 rounded-lg border border-dashed border-accent bg-accent/15 px-2 py-1 text-[11px] text-accent" style={{ top, height }}>
+                      {time(a)}–{time(new Date(b.getTime() + SNAP_MIN * 60_000))}
+                    </div>
+                  )
+                })()}
                 {isToday && nowTop > 0 && nowTop < hours.length * HOUR_PX && (
                   <div aria-hidden className="pointer-events-none absolute inset-x-0 z-10 flex items-center" style={{ top: nowTop }}>
                     <span className="-ml-1 size-2 rounded-full bg-accent" />
@@ -251,41 +377,51 @@ function MonthGrid({ anchor, items, now, onPick }: { anchor: Date; items: Item[]
   )
 }
 
-function NewEventDialog({ open, onClose, courses, day }: { open: boolean; onClose: () => void; courses: Course[]; day: Date }) {
+const KIND_CHOICE: Record<EventKind, string> = { appointment: 'Compromisso', class: 'Aula', exam: 'Avaliação (exame, teste, frequência)' }
+
+/** Create an event, or edit one (`event`): changes reach Google Calendar too when it is connected. */
+function EventDialog({ open, onClose, courses, day, event, range }: { open: boolean; onClose: () => void; courses: Course[]; day: Date; event?: CalEvent; range?: [Date, Date] }) {
   const toast = useToast()
-  const base = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 14)
-  const [form, setForm] = useState({ title: '', course_id: '', starts_at: toLocalInput(base.toISOString()), ends_at: toLocalInput(new Date(base.getTime() + 3_600_000).toISOString()), location: '' })
+  const base = range?.[0] ?? new Date(day.getFullYear(), day.getMonth(), day.getDate(), 14)
+  const until = range?.[1] ?? new Date(base.getTime() + 3_600_000)
+  const [form, setForm] = useState(() =>
+    event
+      ? { title: event.title, kind: event.kind, course_id: event.course ? String(event.course.id) : '', starts_at: toLocalInput(event.starts_at), ends_at: toLocalInput(event.ends_at), location: event.location ?? '' }
+      : { title: '', kind: 'appointment' as EventKind, course_id: '', starts_at: toLocalInput(base.toISOString()), ends_at: toLocalInput(until.toISOString()), location: '' },
+  )
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }))
   async function submit(e: FormEvent) {
     e.preventDefault()
+    const data = {
+      title: form.title.trim(),
+      kind: form.kind,
+      course_id: form.course_id ? Number(form.course_id) : null,
+      starts_at: fromLocalInput(form.starts_at)!,
+      ends_at: fromLocalInput(form.ends_at)!,
+      location: form.location || null,
+    }
     try {
-      await api.createEvent({
-        title: form.title.trim(),
-        kind: 'appointment',
-        course_id: form.course_id ? Number(form.course_id) : null,
-        starts_at: fromLocalInput(form.starts_at)!,
-        ends_at: fromLocalInput(form.ends_at)!,
-        location: form.location || null,
-      })
-      toast('Compromisso criado', 'ok')
+      if (event) await api.updateEvent(event.id, data)
+      else await api.createEvent(data)
+      toast(event ? 'Evento guardado' : 'Evento criado', 'ok')
       refreshAll()
       onClose()
     } catch (err) {
-      toast(`Não foi possível criar: ${(err as Error).message}`, 'error')
+      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
     }
   }
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Novo compromisso"
+      title={event ? 'Editar evento' : 'Novo evento'}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
             Cancelar
           </Button>
           <Button variant="primary" type="submit" form="event-form" disabled={!form.title.trim()}>
-            Criar
+            {event ? 'Guardar' : 'Criar'}
           </Button>
         </>
       }
@@ -293,6 +429,13 @@ function NewEventDialog({ open, onClose, courses, day }: { open: boolean; onClos
       <form id="event-form" onSubmit={submit} className="grid gap-4">
         <Field label="Título">
           <Input autoFocus required maxLength={300} value={form.title} onChange={set('title')} placeholder="Ex.: Reunião de grupo" />
+        </Field>
+        <Field label="Tipo">
+          <Select value={form.kind} onChange={set('kind')}>
+            {(Object.keys(KIND_CHOICE) as EventKind[]).map((k) => (
+              <option key={k} value={k}>{KIND_CHOICE[k]}</option>
+            ))}
+          </Select>
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Início">
@@ -320,6 +463,100 @@ function NewEventDialog({ open, onClose, courses, day }: { open: boolean; onClos
   )
 }
 
+/** Delete (or, for a university class, hide) an event; shared by the details dialog and the Delete key. */
+async function deleteEvent(event: CalEvent, toast: ReturnType<typeof useToast>): Promise<boolean> {
+  try {
+    await api.deleteEvent(event.id)
+    toast(event.source === 'manual' ? 'Evento apagado' : 'Escondido: não volta na próxima sincronização', 'ok')
+    refreshAll()
+    return true
+  } catch (err) {
+    toast(`Não foi possível apagar: ${(err as Error).message}`, 'error')
+    return false
+  }
+}
+
+/** Asks before deleting the event under the mouse when Delete is pressed. */
+function ConfirmDelete({ event, onClose }: { event: CalEvent; onClose: () => void }) {
+  const toast = useToast()
+  const manual = event.source === 'manual'
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={manual ? 'Apagar evento?' : 'Esconder aula?'}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button variant="danger" autoFocus onClick={async () => (await deleteEvent(event, toast)) && onClose()}>
+            {manual ? 'Apagar' : 'Esconder'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[13px] text-muted">
+        «{event.title}», {longDay(new Date(event.starts_at))} às {time(new Date(event.starts_at))}.{' '}
+        {manual
+          ? 'Também sai do Google Calendar, se estiver ligado.'
+          : 'Vem da universidade: fica escondida aqui e no Google, e não volta na próxima sincronização.'}
+      </p>
+    </Dialog>
+  )
+}
+
+/** Edit or delete an event. University classes are hidden rather than deleted (the next sync would bring them back);
+ * events from the user's other Google calendars are read-only here, except for their type. */
+function EventActions({ event, onEdit, onDone }: { event: CalEvent; onEdit: () => void; onDone: () => void }) {
+  const toast = useToast()
+  const [confirming, setConfirming] = useState(false)
+  if (event.source === 'google')
+    return (
+      <div className="flex w-full flex-wrap items-center justify-between gap-3">
+        <span className="text-xs text-faint">Do teu Google Calendar (só leitura)</span>
+        <Select
+          aria-label="Tipo do evento"
+          className="h-8 w-44 text-xs"
+          value={event.kind}
+          onChange={async (e) => {
+            try {
+              await api.updateEvent(event.id, { kind: e.target.value as EventKind })
+              toast('Tipo guardado', 'ok')
+              refreshAll()
+              onDone()
+            } catch (err) {
+              toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
+            }
+          }}
+        >
+          {(Object.keys(KIND_CHOICE) as EventKind[]).map((k) => (
+            <option key={k} value={k}>{KIND_CHOICE[k]}</option>
+          ))}
+        </Select>
+      </div>
+    )
+  async function remove() {
+    if (await deleteEvent(event, toast)) onDone()
+  }
+  return (
+    <>
+      {confirming ? (
+        <Button variant="danger" onClick={() => void remove()}>
+          {event.source === 'manual' ? 'Confirmar: apagar' : 'Confirmar: esconder'}
+        </Button>
+      ) : (
+        <Button variant="ghost" onClick={() => setConfirming(true)}>
+          Apagar
+        </Button>
+      )}
+      <Button variant="primary" onClick={onEdit}>
+        Editar
+      </Button>
+    </>
+  )
+}
+
 export default function Calendar() {
   const now = useNow(60_000)
   const [params, setParams] = useSearchParams()
@@ -328,7 +565,41 @@ export default function Calendar() {
   const [hidden, setHidden] = useState<Set<Kind>>(new Set())
   const [courseId, setCourseId] = useState('')
   const [open, setOpen] = useState<Item | null>(null)
-  const [creating, setCreating] = useState(false)
+  const [creating, setCreating] = useState<false | true | [Date, Date]>(false)
+  const toast = useToast()
+  async function moveEvent(item: Item, start: Date, end: Date) {
+    try {
+      await api.updateEvent(item.event!.id, { starts_at: start.toISOString(), ends_at: end.toISOString() })
+      toast(`${item.title}: ${longDay(start)}, ${time(start)}`, 'ok')
+      refreshAll()
+    } catch (err) {
+      toast(`Não foi possível mover: ${(err as Error).message}`, 'error')
+    }
+  }
+  const [editing, setEditing] = useState<CalEvent | null>(null)
+  const [hovered, setHovered] = useState<Item | null>(null)
+  // Holo Hands peace sign: back to today in the week view.
+  useEffect(() => {
+    const reset = (e: Event) => {
+      e.preventDefault()
+      setParams({ date: dayKey(new Date()), view: 'week' })
+    }
+    window.addEventListener('peace:reset', reset)
+    return () => window.removeEventListener('peace:reset', reset)
+  }, [setParams])
+  const [confirming, setConfirming] = useState<CalEvent | null>(null)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Delete' || !hovered || document.querySelector('dialog[open]')) return
+      if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable]')) return
+      if (!hovered.event) return toast('Só os eventos se apagam aqui (prazos e sessões não).', 'error')
+      if (hovered.event.source === 'google') return toast('Vem de um calendário Google só de leitura: apaga-o no Google.', 'error')
+      e.preventDefault()
+      setConfirming(hovered.event)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [hovered]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = (date: Date, v: View = view) => setParams({ date: dayKey(date), view: v })
   const [start, end] = useMemo(() => {
@@ -365,7 +636,7 @@ export default function Calendar() {
         subtitle="Aulas, avaliações e sessões de estudo, com os prazos de cada dia."
         actions={
           <Button onClick={() => setCreating(true)}>
-            <Plus className="size-4" /> Compromisso
+            <Plus className="size-4" /> Evento
           </Button>
         }
       />
@@ -419,10 +690,26 @@ export default function Calendar() {
       {view === 'month' ? (
         <MonthGrid anchor={anchor} items={items} now={now} onPick={(d) => go(d, 'day')} />
       ) : (
-        <TimeGrid days={days} items={items} now={now} onOpen={setOpen} />
+        <TimeGrid days={days} items={items} now={now} onOpen={setOpen} onCreate={(a, b) => setCreating([a, b])} onMove={(i, a, b) => void moveEvent(i, a, b)} onHover={setHovered} />
       )}
 
-      <Dialog open={!!open} onClose={() => setOpen(null)} title={open?.title ?? ''}>
+      <Dialog
+        open={!!open}
+        onClose={() => setOpen(null)}
+        title={open?.title ?? ''}
+        footer={
+          open?.event && (
+            <EventActions
+              event={open.event}
+              onEdit={() => {
+                setEditing(open.event!)
+                setOpen(null)
+              }}
+              onDone={() => setOpen(null)}
+            />
+          )
+        }
+      >
         {open && (
           <dl className="grid gap-3 text-[13px]">
             <div className="flex flex-wrap items-center gap-2">
@@ -461,7 +748,9 @@ export default function Calendar() {
           </dl>
         )}
       </Dialog>
-      <NewEventDialog open={creating} onClose={() => setCreating(false)} courses={courses.data ?? []} day={anchor} />
+      {confirming && <ConfirmDelete event={confirming} onClose={() => setConfirming(null)} />}
+      {creating && <EventDialog open onClose={() => setCreating(false)} courses={courses.data ?? []} day={anchor} range={creating === true ? undefined : creating} />}
+      {editing && <EventDialog open onClose={() => setEditing(null)} courses={courses.data ?? []} day={anchor} event={editing} />}
     </div>
   )
 }

@@ -1,4 +1,5 @@
 """scripts/backup.sh and scripts/restore.sh against the throwaway *_test database (direct mode)."""
+import json
 import os
 import shutil
 import stat
@@ -180,3 +181,76 @@ def test_backups_are_copied_over_ssh_and_verified_on_the_other_host(tmp_path):
     assert (copy / name).read_bytes() == (tmp_path / "backups" / name).read_bytes()
     assert subprocess.run(["sha256sum", "-c", f"{name}.sha256"], cwd=copy, capture_output=True).returncode == 0
     assert oct(copy.stat().st_mode & 0o777) == "0o700"
+
+
+def status(tmp_path, kind):
+    return json.loads((tmp_path / "backups" / f"status-{kind}.json").read_text())
+
+
+def test_every_backup_is_restored_into_a_throwaway_place_and_reported(session, tmp_path):
+    session.add(Task(title="Relatório"))
+    session.commit()
+    out = run("backup.sh", "db", tmp_path=tmp_path)
+    assert out.returncode == 0, out.stderr
+    assert "restored into a throwaway cluster" in out.stderr and "tasks=1" in out.stderr
+    s = status(tmp_path, "db")
+    assert (s["ok"], s["restore_test"], s["offsite"], s["encrypted"], s["file"]) == (True, "passed", "none", False, dumps(tmp_path)[0])
+
+
+def test_a_failed_backup_is_reported_in_its_status(tmp_path):
+    out = run("backup.sh", "db", tmp_path=tmp_path, PGDATABASE="no_such_database_test")
+    s = status(tmp_path, "db")
+    assert out.returncode != 0 and s["ok"] is False and "pg_dump" in s["error"]
+
+
+def test_vault_restore_keeps_contents_and_metadata(tmp_path):
+    vault = tmp_path / "My Vault"
+    (vault / "notas").mkdir(parents=True)
+    note = vault / "notas" / "a.md"
+    note.write_text("# a\n")
+    os.utime(note, (1_600_000_000, 1_600_000_000))
+    note.chmod(0o640)
+    out = run("backup.sh", "vault", tmp_path=tmp_path, PEACE_VAULT=str(vault))
+    assert out.returncode == 0 and "extracted and compared (1 files" in out.stderr, out.stderr
+    assert status(tmp_path, "vault")["restore_test"] == "passed"
+
+
+def test_the_repository_is_backed_up_with_its_history(tmp_path):
+    repo = tmp_path / "repo"
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.pt"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for i in range(2):
+        (repo / "f").write_text(str(i))
+        subprocess.run([*git, "add", "f"], check=True)
+        subprocess.run([*git, "commit", "-qm", f"c{i}"], check=True)
+    out = run("backup.sh", "repo", tmp_path=tmp_path, PEACE_REPO=str(repo))
+    assert out.returncode == 0 and "fsck clean (2 commits" in out.stderr, out.stderr
+    assert len(list((tmp_path / "backups").glob("repo-*.bundle"))) == 1
+
+
+def test_restore_test_refuses_a_changed_backup(tmp_path):
+    assert run("backup.sh", "db", tmp_path=tmp_path).returncode == 0
+    dump = tmp_path / "backups" / dumps(tmp_path)[0]
+    dump.write_bytes(dump.read_bytes() + b"x")
+    out = run("restore-test.sh", str(dump), tmp_path=tmp_path)
+    assert out.returncode != 0 and "checksum mismatch" in out.stderr
+
+
+@pytest.mark.skipif(not shutil.which("gpg"), reason="gpg is not installed")
+def test_the_copy_off_the_disk_is_encrypted_and_decrypts_to_the_backup(tmp_path):
+    home = tmp_path / "gnupg"
+    home.mkdir(mode=0o700)
+    gpg = ["gpg", "--homedir", str(home), "--batch", "--quiet"]
+    subprocess.run([*gpg, "--passphrase", "", "--pinentry-mode", "loopback", "--quick-gen-key", "PEACE test <t@example.pt>", "default", "default", "never"], check=True)
+    fpr = next(line.split(":")[9] for line in subprocess.run([*gpg, "--with-colons", "--list-keys"], capture_output=True,
+                                                             text=True, check=True).stdout.splitlines() if line.startswith("fpr"))
+    copy = tmp_path / "drive"
+    out = run("backup.sh", "db", tmp_path=tmp_path, PEACE_BACKUP_COPY_TO=str(copy), PEACE_BACKUP_GPG_RECIPIENT=fpr, GNUPGHOME=str(home))
+    assert out.returncode == 0, out.stderr
+    [name] = dumps(tmp_path)
+    assert sorted(p.name for p in copy.iterdir()) == [f"{name}.gpg", f"{name}.gpg.sha256"]
+    plain = subprocess.run([*gpg, "--decrypt", copy / f"{name}.gpg"], capture_output=True, check=True).stdout
+    assert plain == (tmp_path / "backups" / name).read_bytes()
+    assert status(tmp_path, "db")["encrypted"] is True and not list((tmp_path / "backups").glob(".*gpg"))
+    bad = run("backup.sh", "db", tmp_path=tmp_path, PEACE_BACKUP_COPY_TO=str(copy), PEACE_BACKUP_GPG_RECIPIENT="ABC")
+    assert bad.returncode != 0 and "fingerprint" in bad.stderr

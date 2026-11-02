@@ -41,7 +41,8 @@ def upsert_from_source(
     `record_created=False` stays silent about new rows (e.g. every class of a new timetable).
     """
     snapshot = {k: _jsonable(v) for k, v in fields.items()}
-    obj = session.scalar(select(model).filter_by(source=source, external_id=external_id))
+    # A cancelled event still exists: finding it keeps it cancelled instead of re-creating it.
+    obj = session.scalar(select(model).filter_by(source=source, external_id=external_id).execution_options(include_cancelled=True))
     if obj is None:
         obj = model(source=source, external_id=external_id, source_data=snapshot, **fields)
         session.add(obj)

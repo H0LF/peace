@@ -121,7 +121,7 @@ export function buildOrb(scene: THREE.Scene, hero: boolean, compact = false) {
   halo.scale.setScalar(hero ? 3.6 : 3.2)
   scene.add(halo, core)
 
-  // Hero only: a still outline circle, floor ripples, vertical light beams and drifting dust.
+  // Hero only: a still outline circle, floor ripples and drifting dust.
   const ripples: THREE.LineLoop[] = []
   let dust: THREE.Points | undefined
   if (hero) {
@@ -141,14 +141,6 @@ export function buildOrb(scene: THREE.Scene, hero: boolean, compact = false) {
     spot.scale.set(2.6, 0.5, 1)
     spot.position.y = -1.3
     scene.add(floor, spot)
-
-    const beams: THREE.Vector3[] = []
-    for (let i = 0; i < 7; i++) {
-      const x = (Math.random() - 0.5) * 6
-      const z = -1.5 - Math.random() * 2
-      beams.push(new THREE.Vector3(x, 4, z), new THREE.Vector3(x, 0.4 + Math.random() * 2.5, z))
-    }
-    scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(beams), line(0.18)))
 
     const d = 500
     const dp = new Float32Array(d * 3)

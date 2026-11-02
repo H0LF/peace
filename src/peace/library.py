@@ -53,7 +53,8 @@ def extract_text(path: Path, filename: str) -> str:
         import pypdf
 
         reader = pypdf.PdfReader(path)
-        raw = "\n".join(page.extract_text() or "" for page in reader.pages[:400])
+        # "[p. N]" marks survive the whitespace folding below, so answers can cite the page.
+        raw = "\n".join(f"[p. {i}] " + (page.extract_text() or "") for i, page in enumerate(reader.pages[:400], 1))
     elif ext in OFFICE:
         with zipfile.ZipFile(path) as z:
             parts = sorted((n for n in z.namelist() if n.startswith(OFFICE[ext]) and n.endswith(".xml")), key=_natural)
@@ -127,8 +128,6 @@ def term_frequencies(text: str, top: int = 80, min_count: int = 2) -> dict[str, 
 def pending(session: Session, now: datetime, limit: int = 40) -> list[Material]:
     query = select(Material).where(
         Material.kind == "file",
-        # The university download endpoint marks files as consulted; indexing must not do that.
-        Material.source != 'inforestudante',
         # Not yet downloaded, or changed upstream since (NULL-safe: files without a date are fetched once).
         or_(Material.fetched_at.is_(None), Material.fetch_error.is_not(None),
             Material.fetched_modified_at.is_distinct_from(Material.modified_at)),
@@ -151,6 +150,25 @@ def _fail(m: Material, error: str, now: datetime) -> None:
     m.fetched_at, m.fetch_error = now, error[:500]
 
 
+def _fetch_inforestudante(todo: list[Material], now: datetime) -> None:
+    """One login and one read of the lists for the whole batch: the site's links only last a session.
+    The site marks each downloaded file as "consulted"; the student accepted that (ADR-010)."""
+    if not todo:
+        return
+    parts = {m.external_id: cached_file(m.id).with_suffix(".part") for m in todo}
+    try:
+        errors = sync.download_inforestudante(parts, MAX_BYTES)
+    except Exception as e:  # a failed login must not stop the Moodle files in this batch
+        errors = {m.external_id: f"{type(e).__name__}: {e}" for m in todo}
+    for m in todo:
+        part = parts[m.external_id]
+        if m.external_id in errors:
+            part.unlink(missing_ok=True)
+            _fail(m, errors[m.external_id], now)
+        else:
+            _analyze(m, part.replace(cached_file(m.id)), now)
+
+
 def fetch_pending(session: Session, now: datetime, limit: int = 40) -> int:
     """Download and analyze new or changed files. Returns how many were processed."""
     on = sync.enabled_sources(session)
@@ -158,6 +176,7 @@ def fetch_pending(session: Session, now: datetime, limit: int = 40) -> int:
     if not todo:
         return 0
     (data_dir() / "materials").mkdir(parents=True, exist_ok=True)
+    _fetch_inforestudante([m for m in todo if m.source == "inforestudante" and not (m.size and m.size > MAX_BYTES)], now)
     for m in todo:
         if m.size and m.size > MAX_BYTES:
             _fail(m, "ficheiro maior que 200 MB", now)
@@ -183,6 +202,26 @@ def fetch_pending(session: Session, now: datetime, limit: int = 40) -> int:
                 _fail(m, f"{type(e).__name__}: {e}", now)
     session.commit()
     return len(todo)
+
+
+def mark_pages(session: Session, limit: int = 20) -> int:
+    """Files read before page marks existed: read them again from the local copy (no download)."""
+    todo = session.scalars(select(Material).where(Material.filename.ilike("%.pdf"), Material.content.is_not(None),
+                                                  Material.content != "", Material.content.not_like("[p. 1]%"))
+                           .limit(limit * 3)).all()
+    done = 0
+    for m in todo:
+        if done == limit:
+            break
+        if cached_file(m.id).is_file():
+            try:
+                m.content = extract_text(cached_file(m.id), m.filename or "")
+            except Exception as e:  # a broken file keeps its old text
+                log.warning("could not re-read %s: %s", m.filename, e)
+                continue
+            done += 1
+    session.commit()
+    return done
 
 
 def remove_orphans(session: Session) -> int:

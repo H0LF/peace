@@ -1,7 +1,7 @@
-import { BookOpen, Network, NotebookPen, Search, X } from 'lucide-react'
-import { lazy, Suspense, useMemo, useState, type FormEvent } from 'react'
+import { BookOpen, CircleHelp, Network, NotebookPen, Search, X } from 'lucide-react'
+import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
-import { obsidianHref } from '../components/materials'
+import { obsidianHref, onThisPc } from '../components/materials'
 import { Badge, Button, Card, ChunkBoundary, Empty, ErrorNote, Input, PageHeader, Select, Skeleton, KIND_COLOR, cx } from '../components/ui'
 import { api, type GraphKind, type GraphLink, type GraphNode } from '../lib/api'
 import { useApi } from '../lib/hooks'
@@ -62,21 +62,28 @@ function Details({ node, all, courses, onSelect }: { node: GraphNode; all: { nod
         <p className="num mt-1 text-xs text-faint">{edges.length} ligações</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        {node.vault_path && (
+        {!onThisPc && node.material_id !== null && (
+          <a href={`/api/v1/materials/${node.material_id}/file`} target="_blank" rel="noreferrer noopener" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-ink hover:brightness-110">
+            <BookOpen className="size-4" /> Abrir ficheiro
+          </a>
+        )}
+        {onThisPc && node.vault_path && (
           <a href={obsidianHref(node.vault_path)} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-ink hover:brightness-110">
             <BookOpen className="size-4" /> Abrir no Obsidian
           </a>
         )}
-        <a href={obsidianHref(node.note)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] font-medium hover:border-accent/50 hover:text-accent">
-          <NotebookPen className="size-4" /> Nota do grafo
-        </a>
+        {onThisPc && (
+          <a href={obsidianHref(node.note)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-[13px] font-medium hover:border-accent/50 hover:text-accent">
+            <NotebookPen className="size-4" /> Nota do grafo
+          </a>
+        )}
         {node.kind === 'course' && node.course_id !== null && (
           <Link to={`/cadeiras/${node.course_id}`} className="inline-flex h-8 items-center rounded-lg border border-line px-3 text-[13px] font-medium hover:border-accent/50 hover:text-accent">
             Ver cadeira
           </Link>
         )}
       </div>
-      <ul aria-label="Ligações" className="grid max-h-[45vh] gap-0.5 overflow-y-auto pr-1">
+      <ul aria-label="Ligações" className="grid max-h-[32vh] gap-0.5 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {edges.map(({ link, other }) => (
           <li key={`${link.source}>${link.target}:${link.relation}`}>
             <button type="button" onClick={() => onSelect(other.id)} className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-surface-2">
@@ -98,6 +105,7 @@ function Details({ node, all, courses, onSelect }: { node: GraphNode; all: { nod
 }
 
 export default function Knowledge() {
+  const [helpHidden, setHelpHidden] = useState(false)
   const graph = useApi(() => api.knowledgeGraph(), [], 0)
   const [kinds, setKinds] = useState(() => new Set<GraphKind>(KINDS.map((k) => k.kind)))
   const [course, setCourse] = useState<number | null>(null)
@@ -110,6 +118,21 @@ export default function Knowledge() {
   const courses = useMemo(() => new Map(all.nodes.filter((n) => n.kind === 'course' && n.course_id !== null).map((n) => [n.course_id!, n])), [all])
   // A selection hidden by the filters counts as none.
   const node = selected ? shown.nodes.find((n) => n.id === selected) : undefined
+  // Esc (or the Holo Hands fist) closes the details; a Holo Hands double pinch opens the picked node in Obsidian.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setSelected(null)
+    const open = () => {
+      if (!node) return
+      if (onThisPc) window.location.href = obsidianHref(node.vault_path ?? node.note)
+      else if (node.material_id !== null) window.open(`/api/v1/materials/${node.material_id}/file`, '_blank', 'noopener')
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('peace:open', open)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('peace:open', open)
+    }
+  }, [node])
   const results = useMemo(() => {
     const q = fold(query.trim())
     if (!q) return []
@@ -207,8 +230,9 @@ export default function Knowledge() {
             </div>
           </div>
 
-          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="hud relative h-[62dvh] min-h-[420px] overflow-hidden rounded-2xl border border-line bg-[var(--scene-bg)]">
+          {/* The graph takes the whole width and the rest of the screen; help and details float over it (below it on phones). */}
+          <div className="relative grid gap-4">
+            <div className="hud relative h-[calc(100dvh-230px)] min-h-[480px] overflow-hidden rounded-2xl border border-line bg-[var(--scene-bg)]">
               <ChunkBoundary fallback={<p className="p-6 text-[13px] text-muted">Não foi possível carregar o grafo. Recarrega a página.</p>}>
                 <Suspense fallback={<Skeleton className="absolute inset-0" />}>
                   <KnowledgeGraph nodes={shown.nodes} links={shown.links} selected={node?.id ?? null} onSelect={setSelected} />
@@ -217,12 +241,23 @@ export default function Knowledge() {
               <p className="num pointer-events-none absolute bottom-3 left-4 text-[11px] text-muted">
                 {shown.nodes.length} nós · {shown.links.length} ligações · {communities} comunidades (Graphify)
               </p>
+              {!node && helpHidden && (
+                <Button size="icon" variant="secondary" aria-label="Mostrar ajuda" className="absolute top-3 right-3 z-10" onClick={() => setHelpHidden(false)}>
+                  <CircleHelp className="size-4" />
+                </Button>
+              )}
             </div>
+            {(node || !helpHidden) && (
             <Card
+              className="lg:absolute lg:top-3 lg:right-3 lg:z-10 lg:w-[320px]"
               title={node ? 'Detalhes' : 'Como usar'}
               action={
-                node && (
+                node ? (
                   <Button size="sm" variant="ghost" aria-label="Fechar detalhes" onClick={() => setSelected(null)}>
+                    <X className="size-4" />
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="ghost" aria-label="Esconder ajuda" onClick={() => setHelpHidden(true)}>
                     <X className="size-4" />
                   </Button>
                 )
@@ -248,6 +283,7 @@ export default function Knowledge() {
                 </div>
               )}
             </Card>
+            )}
           </div>
         </>
       )}

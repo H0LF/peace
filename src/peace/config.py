@@ -41,6 +41,6 @@ def get_settings() -> Settings:
         api_token=token,
         timezone=os.environ.get("PEACE_TIMEZONE", "Europe/Lisbon"),
         log_level=os.environ.get("PEACE_LOG_LEVEL", "INFO"),
-        host=os.environ.get("PEACE_HOST", "0.0.0.0"),
+        host=os.environ.get("PEACE_HOST", "127.0.0.1"),
         port=int(os.environ.get("PEACE_PORT", "8420")),
     )

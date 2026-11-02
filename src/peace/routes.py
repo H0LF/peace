@@ -1,10 +1,11 @@
 """Domain API: courses, tasks, events, study sessions, planning, deadlines, changes."""
 
-from collections import defaultdict
+import mimetypes
 from datetime import UTC, date, datetime, time, timedelta
 import hashlib
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
@@ -32,10 +33,9 @@ from peace.models import (
     SyncRun,
     Task,
 )
-from peace.notifications import LOW_PRIORITY, NotifyPrefs, focus_until, in_quiet_hours, low_priority_budget, notify_prefs, rate_limited
+from peace.notifications import LOW_PRIORITY, NotifyPrefs, check_worker, focus_until, in_quiet_hours, low_priority_budget, notify_prefs, rate_limited
 from peace import academic, knowledge, library
-from peace.planner import PlanPrefs, plan_day, ranked
-from peace.worker import next_slot
+from peace.planner import PlanPrefs, ranked
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_token)])
 DB = Depends(get_session)
@@ -280,6 +280,8 @@ def create_event(body: s.EventIn, session: Session = DB):
 def update_event(event_id: int, body: s.EventPatch, session: Session = DB):
     event = _get(session, Event, event_id)
     data = body.model_dump(exclude_unset=True)
+    if event.source == "google" and set(data) - {"kind"}:
+        raise HTTPException(409, "Vem de um calendário Google só de leitura: muda-o no Google (aqui só o tipo).")
     if "course_id" in data:
         _check_exists(session, Course, data["course_id"])
     _apply(event, data)
@@ -292,8 +294,13 @@ def update_event(event_id: int, body: s.EventPatch, session: Session = DB):
 @router.delete("/events/{event_id}", status_code=204)
 def delete_event(event_id: int, session: Session = DB):
     event = _get(session, Event, event_id)
-    _manual_only(event)
-    session.delete(event)
+    if event.source == "google":
+        raise HTTPException(409, "Vem de um calendário Google só de leitura: apaga-o no Google.")
+    if event.source == "manual":
+        session.delete(event)
+    else:  # an imported class or exam: hidden for good, so the next sync does not bring it back
+        event.cancelled = True
+        _audit(session, "event.cancel", id=event.id, title=event.title)
     session.commit()
     return Response(status_code=204)
 
@@ -381,39 +388,7 @@ def _with_materials(session: Session, rows: list[StudySession]) -> list[s.Sessio
 
 
 def _plan(session: Session, days: list[date], now: datetime) -> None:
-    # Serialize planning with manual session creation so simultaneous requests cannot duplicate work.
-    session.execute(select(func.pg_advisory_xact_lock(842001)))
-    tz, prefs = _tz(), _prefs(session)
-    tasks = academic.targets(session, now, prefs)
-    # Planning is additive: an existing commitment is never silently replaced.
-    allocated: dict[int, int] = defaultdict(int)
-    for row in session.scalars(
-        select(StudySession).where(
-            StudySession.status == "planned", StudySession.ends_at > now
-        )
-    ):
-        target_id = -row.event_id if row.event_id else row.task_id
-        if target_id is not None and academic.valid_allocation(row, now):
-            allocated[target_id] += _minutes(row.starts_at, row.ends_at)
-    created = []
-    for day in days:
-        start, end = _day_bounds(day, tz)
-        kept = session.scalars(
-            select(StudySession).where(
-                StudySession.starts_at < end, StudySession.ends_at > start, StudySession.status != "skipped"
-            )
-        ).all()
-        events = session.scalars(select(Event).where(Event.starts_at < end, Event.ends_at > start)).all()
-        busy = [(e.starts_at, e.ends_at) for e in events] + [(k.starts_at, k.ends_at) for k in kept]
-        booked = sum(_minutes(k.starts_at, k.ends_at) for k in kept if k.status == "done" or k.ends_at > now)
-        for p in plan_day(day, tz, prefs, tasks, busy, now, allocated, booked):
-            allocated[p.target_id] += _minutes(p.starts_at, p.ends_at)
-            created.append(
-                StudySession(
-                    task_id=p.task_id, event_id=p.event_id, course_id=p.course_id, starts_at=p.starts_at, ends_at=p.ends_at, reason=p.reason
-                )
-            )
-    session.add_all(created)
+    created = academic.plan_sessions(session, days, now, _tz(), _prefs(session))
     if created:
         session.add(Change(source='planner', entity='plan', kind='created',
                            summary=f'Plano de estudo: {len(created)} novas sessões; compromissos existentes preservados.'))
@@ -513,7 +488,7 @@ def get_today(session: Session = DB, now: datetime = NOW):
         "recommendation": academic.recommendation(session, now, prefs, tz),
         "upcoming": _deadline_items(session, now, 7),
         "changes": [s.ChangeOut.model_validate(c) for c in changes],
-        "sync": sync.status(session, now, next_slot(now, tz)),
+        "sync": sync.status(session, now, sync.next_slot(now, tz)),
     }
 
 
@@ -542,7 +517,7 @@ def list_sync_runs(limit: int = Query(20, ge=1, le=200), session: Session = DB):
 
 @router.get("/sync/status")
 def get_sync_status(session: Session = DB, now: datetime = NOW):
-    return sync.status(session, now, next_slot(now, _tz()))
+    return sync.status(session, now, sync.next_slot(now, _tz()))
 
 
 @router.post("/sync", status_code=202)
@@ -642,15 +617,26 @@ class SourceLogin(BaseModel):
     password: str = Field("", max_length=200)  # empty: keep the saved one. Write-only, never sent back
 
 
+class MailLogin(SourceLogin):
+    enabled: bool = False
+    clean_junk: bool = True  # move Junk Email older than 14 days to Deleted Items without asking
+    quota_mb: int | None = Field(None, ge=1, le=1_000_000)  # the mailbox limit, if the student knows it
+
+
 class IntegrationsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     inforestudante: SourceLogin
     moodle: SourceLogin
+    email: MailLogin | None = None  # older dashboards do not send it: leave it as it is
 
 
 def _integrations_out(session: Session) -> dict[str, Any]:
-    return {src: {"enabled": v["enabled"], "url": v["url"], "username": v["username"], "has_password": bool(v["password"])}
-            for src, v in sync.integrations(session).items()}
+    out = {src: {"enabled": v["enabled"], "url": v["url"], "username": v["username"], "has_password": bool(v["password"])}
+           for src, v in sync.integrations(session).items()}
+    m = sync.mail_login(session)
+    out["email"] = {"enabled": m["enabled"], "url": m["url"], "username": m["username"], "has_password": bool(m["password"]),
+                    "clean_junk": m["clean_junk"], "quota_mb": m["quota_mb"]}
+    return out
 
 
 @router.get("/preferences/integrations")
@@ -667,8 +653,20 @@ def put_integrations(body: IntegrationsIn, session: Session = DB):
         if new.enabled and not new.url:
             raise HTTPException(422, f"Escreve o endereço do {src.capitalize()} para o ligar.")
         old = saved.get(src, {})
+        if not new.password and old.get("password") and sync.site_address(src, new.url) != old.get("url"):
+            raise HTTPException(422, f"Escreve outra vez a palavra-passe do {src.capitalize()} para mudar o endereço.")
         saved[src] = {"enabled": new.enabled, "url": sync.site_address(src, new.url), "username": new.username.strip(),
                       "password": new.password or old.get("password", "")}
+    if (new := body.email) is not None:
+        if new.enabled and not new.url:
+            raise HTTPException(422, "Escreve o endereço do webmail para ligar o email.")
+        old = saved.get("email", {})
+        url = f"https://{urlsplit(new.url).hostname}" if new.url else ""  # only the host matters: IMAP runs there
+        if not new.password and old.get("password") and url != old.get("url"):
+            raise HTTPException(422, "Escreve outra vez a palavra-passe do email para mudar o endereço.")
+        saved["email"] = {"enabled": new.enabled, "url": url, "username": new.username.strip(),
+                          "password": new.password or old.get("password", ""), "clean_junk": new.clean_junk,
+                          "quota_mb": new.quota_mb}
     if row:
         row.value = saved
     else:
@@ -701,7 +699,10 @@ def material_file(material_id: int, session: Session = DB):
     path = library.cached_file(material.id)
     if material.kind != "file" or not path.is_file():
         raise HTTPException(404, "ficheiro ainda não descarregado")
-    return FileResponse(path, media_type=material.mimetype or "application/octet-stream", filename=material.filename)
+    # The site often names no type. Only a PDF opens in the browser: other course files are untrusted, so they download.
+    media_type = material.mimetype or mimetypes.guess_type(material.filename or "")[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=material.filename,
+                        content_disposition_type="inline" if media_type == "application/pdf" else "attachment")
 
 
 @router.get("/tasks/{task_id}/materials", response_model=list[s.StudyMaterial])
@@ -722,10 +723,8 @@ def _notes_dir() -> Path:
     return (library.data_dir() / "graphify" / "obsidian").resolve()
 
 
-@router.get("/knowledge/notes")
-def knowledge_notes():
-    """Graphify's Obsidian notes for the desktop to copy (only .md and .canvas, never .obsidian/)."""
-    root = _notes_dir()
+def _note_list(root: Path) -> list[dict]:
+    """Notes for the desktop to copy (only .md and .canvas, never hidden folders like .obsidian/)."""
     if not root.is_dir():
         return []
     files = (p for p in root.rglob("*") if p.is_file() and p.suffix in (".md", ".canvas"))
@@ -736,9 +735,40 @@ def knowledge_notes():
     ]
 
 
+@router.get("/knowledge/notes")
+def knowledge_notes():
+    """Graphify's Obsidian notes."""
+    return _note_list(_notes_dir())
+
+
+@router.get("/knowledge/daily")
+def daily_notes():
+    """PEACE's daily notes (peace.journal)."""
+    return _note_list(library.data_dir().resolve() / "daily")
+
+
+@router.get("/knowledge/daily/file")
+def daily_note(path: str = Query(max_length=500)):
+    return _note_file(library.data_dir().resolve() / "daily", path)
+
+
+@router.get("/knowledge/deliveries")
+def delivery_notes():
+    """Readiness reports of assignments (peace.requirements), for the desktop agent to copy into the vault."""
+    return _note_list(library.data_dir().resolve() / "deliveries")
+
+
+@router.get("/knowledge/deliveries/file")
+def delivery_note(path: str = Query(max_length=500)):
+    return _note_file(library.data_dir().resolve() / "deliveries", path)
+
+
 @router.get("/knowledge/notes/file")
 def knowledge_note(path: str = Query(max_length=500)):
-    root = _notes_dir()
+    return _note_file(_notes_dir(), path)
+
+
+def _note_file(root: Path, path: str):
     target = (root / path).resolve()
     if not target.is_relative_to(root) or target.suffix not in (".md", ".canvas") or not target.is_file():
         raise HTTPException(404, "nota não encontrada")
@@ -750,8 +780,17 @@ def knowledge_note(path: str = Query(max_length=500)):
 
 @router.get("/notifications/pending", response_model=list[s.NotificationOut])
 def pending_notifications(session: Session = DB, now: datetime = NOW):
-    """What the desktop should show now. Empty during quiet hours; only urgent ones in focus mode;
-    expired ones are never shown."""
+    """What the desktop should show now (see due_notifications)."""
+    from peace.diagnostics import check_backups  # diagnostics imports this module
+
+    if check_worker(session, now, _tz()) | check_backups(session, now, _tz()):
+        session.commit()
+    return due_notifications(session, now)
+
+
+def due_notifications(session: Session, now: datetime) -> list[Notification]:
+    """What should be shown now, on the PC or the phone. Empty during quiet hours; only urgent ones in focus
+    mode; expired ones are never shown."""
     prefs = notify_prefs(session)
     held = not prefs.enabled or in_quiet_hours(now, _tz(), prefs)
     query = select(Notification).where(
@@ -760,7 +799,8 @@ def pending_notifications(session: Session = DB, now: datetime = NOW):
         or_(Notification.expires_at.is_(None), Notification.expires_at > now),
     )
     if held:
-        query = query.where(Notification.kind == "test")  # an explicit test bypasses automatic-delivery settings
+        # An explicit test, or a reminder at a time the user chose, bypasses automatic-delivery settings.
+        query = query.where(Notification.kind.in_(("test", "reminder")))
     if focus_until(session, now):
         query = query.where(or_(Notification.urgent, Notification.kind == "test"))
     allowed = low_priority_budget(session, now, prefs)

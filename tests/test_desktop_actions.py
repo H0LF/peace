@@ -502,3 +502,63 @@ def test_a_plan_keeps_going_after_a_failure_and_stops_when_cancelled(hypr):
     results, cancelled = actions.run_plan(steps, False, "j2", cancelled=lambda: len(hypr.sent) >= 1)
     assert len(results) == 1 and cancelled
     assert len(actions.run_plan([steps[0]] * 20, False)[0]) == actions.MAX_STEPS
+
+
+def test_notes_search_finds_words_without_accents_and_skips_hidden_folders(monkeypatch, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "Cadeiras").mkdir(parents=True)
+    (vault / ".obsidian").mkdir()
+    (vault / "Cadeiras" / "BD.md").write_text("# BD\nA normalização evita redundância. 3FN: sem dependências transitivas.", encoding="utf-8")
+    (vault / "Normalização.md").write_text("Resumo de normalizacao para o teste.", encoding="utf-8")
+    (vault / ".obsidian" / "cache.md").write_text("normalização", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("normalização e a palavra-passe", encoding="utf-8")
+    (vault / "atalho.md").symlink_to(tmp_path / "secret.txt")  # a link out of the vault is never read
+    monkeypatch.setattr(actions, "VAULT", vault)
+    out = actions.run("notes.search", {"query": "Normalizacao"})
+    notes = [i["note"] for i in out["data"]["items"]]
+    assert out["ok"] and notes[0] == "Normalização.md" and str(Path("Cadeiras") / "BD.md") in notes and len(notes) == 2
+    assert "redundância" in out["data"]["items"][1]["excerpt"]
+    assert actions.run("notes.search", {"query": "receita de bacalhau"})["message"].startswith("Não encontrei")
+
+
+def test_open_refuses_programs_and_launchers(runtime, roots, monkeypatch):
+    calls = spawned(monkeypatch)
+    (roots["docs"] / "instalar.sh").write_text("#!/bin/sh\n")
+    (roots["docs"] / "pagina.html").write_text("<script></script>")
+    exe = roots["docs"] / "binario"
+    exe.write_text("x")
+    exe.chmod(0o755)
+    for name in ("instalar.sh", "pagina.html", "binario"):
+        assert actions.run("files.open", {"path": name, "root": "documentos"})["code"] == "refused", name
+    assert calls == []
+
+
+def test_organize_groups_each_site_with_two_or_more_tabs(bridge):
+    bridge.tabs.append({"id": 4, "windowId": 10, "index": 3, "active": False, "groupId": -1, "title": "Moodle - BD",
+                        "url": "https://moodle.example/course/view.php"})
+    result = actions.run("browser.organize", {})
+    groups = [r["args"] for r in bridge.requests if r["op"] == "group"]
+    assert result["verified"] and groups == [{"tabIds": [1, 4], "title": "moodle.example"}]
+    assert "1 de 1" in result["message"]
+
+
+def test_organize_with_nothing_to_group_says_so(bridge):
+    result = actions.run("browser.organize", {})
+    assert result["ok"] and "já estão arrumados" in result["message"] and not [r for r in bridge.requests if r["op"] == "group"]
+
+
+def test_gather_moves_only_open_windows_of_the_layout_and_can_be_undone(apps, hypr, monkeypatch):
+    calls = spawned(monkeypatch)
+    hypr.add("0xa1", "kitty", ws=1)
+    hypr.add("0xb2", "brave-browser", ws=3)
+    hypr.add("0xc3", "obsidian", ws=1)
+    result = actions.run("windows.gather", {"name": "programacao", "workspace": 2})
+    assert result["verified"] and "2 de 2" in result["message"] and calls == []  # VS Code is not installed: nothing launched
+    assert [hypr.get(a)["workspace"]["id"] for a in ("0xa1", "0xb2", "0xc3")] == [2, 2, 1]
+    assert actions.run("layouts.undo", {})["verified"]
+    assert [hypr.get(a)["workspace"]["id"] for a in ("0xa1", "0xb2")] == [1, 3]
+
+
+def test_gather_with_no_matching_window_fails_honestly(apps, hypr):
+    hypr.add("0xc3", "obsidian", ws=1)
+    assert actions.run("windows.gather", {"name": "programacao", "workspace": 2})["code"] == "not_found"

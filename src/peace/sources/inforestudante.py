@@ -21,7 +21,7 @@ from peace.sources import AuthError, SourceError, text_of
 BASE = os.environ.get("INFORESTUDANTE_URL", "").rstrip("/")  # a Nonio portal, e.g. https://inforestudante.example.pt/nonio
 LISBON = ZoneInfo("Europe/Lisbon")
 CODE_AT_END = re.compile(r"\((\d{5,})\)\s*$")
-KINDS = {"aulas": "class", "avaliacoes": "exam"}
+KINDS = {"aulas": "class", "avaliacoes": "exam", "defesas_trabalhos": "appointment", "entregas_trabalhos": "delivery"}
 
 
 def configure(base: str) -> None:
@@ -195,7 +195,7 @@ class Inforestudante:
             pages[text_of(cells[1])] = listing.text
         return pages
 
-    def download_materials(self, wanted: dict[str, Path]) -> dict[str, str]:
+    def download_materials(self, wanted: dict[str, Path], max_bytes: int) -> dict[str, str]:
         """Download files by external id ("code:material:file") into the given paths.
         Download links carry per-session tokens, so they are looked up again here.
         Note: inforestudante marks a downloaded material as "consulted"."""
@@ -211,8 +211,13 @@ class Inforestudante:
                 if r.status_code != 200 or r.headers.get("content-type", "").startswith("text/html"):
                     errors[external_id] = f"download recusado ({r.status_code})"
                     continue
+                received = 0
                 with target.open("wb") as f:
                     for chunk in r.iter_bytes():
+                        received += len(chunk)
+                        if received > max_bytes:
+                            errors[external_id] = "ficheiro demasiado grande"
+                            break
                         f.write(chunk)
         return errors
 

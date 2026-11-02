@@ -53,4 +53,5 @@ PEACE is installed in $repo.
   Open:   http://127.0.0.1:8420
   Token:  $token   (the first login asks for it; it is also in $conf/peace.env)
 Then, in Definições → Integrações, enter your university's addresses and logins and press «Sincronizar».
+To use PEACE from a laptop or phone too: scripts/remote-access.sh
 EOF

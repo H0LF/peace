@@ -17,7 +17,7 @@ def wav(samples, rate=44100):
 
 
 class FakeWhisper:
-    def transcribe(self, samples, language, vad_filter):
+    def transcribe(self, samples, language, vad_filter, initial_prompt=None):
         self.got = (samples, language)
         return [type("S", (), {"text": " olá "})()], None
 

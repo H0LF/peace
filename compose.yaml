@@ -28,6 +28,7 @@ services:
       PEACE_DB_HOST: db
       PEACE_DATA_DIR: /data
       PEACE_LLM_URL: http://host.docker.internal:11434  # Ollama on this computer, if installed (optional)
+      PEACE_VOICE_URL: http://voice:3900
     extra_hosts:
       - "host.docker.internal:host-gateway"
     secrets: [db_password]

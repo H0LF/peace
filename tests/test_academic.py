@@ -24,7 +24,7 @@ def test_context_includes_synced_assessments_and_completed_prep():
                  starts_at=NOW + timedelta(hours=20), ends_at=NOW + timedelta(hours=22))
     done = StudySession(event_id=1, starts_at=NOW - timedelta(hours=1), ends_at=NOW, status='done')
     db = Mock()
-    db.scalars.side_effect = [[], [exam], [done]]
+    db.scalars.side_effect = [[], [exam], [done], []]
     target, = academic.targets(db, NOW, PlanPrefs())
     assert target.event_id == 1 and target.estimated_minutes == 60
 
@@ -37,6 +37,7 @@ def test_recommendation_uses_same_course_materials_and_reports_no_available_time
     monkeypatch.setattr(academic.knowledge, 'load_index', lambda *args: object())
     suggestions = Mock(return_value=[{'id': 3, 'title': 'Exame anterior', 'why': 'exame de anos anteriores'}])
     monkeypatch.setattr(academic.knowledge, 'suggest_text', suggestions)
+    monkeypatch.setattr('peace.mastery.weak_concepts', lambda *args: [])  # no concepts yet (covered in test_mastery)
     db = Mock()
     db.scalars.side_effect = [[SimpleNamespace(starts_at=NOW, ends_at=exam.starts_at)], [], []]
     rec = academic.recommendation(db, NOW, PlanPrefs(), LX)

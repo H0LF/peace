@@ -36,6 +36,25 @@ class Snapshot:
     courses: list[dict[str, Any]]
     tasks: list[dict[str, Any]]
     materials: list[dict[str, Any]] = field(default_factory=list)
+    posts: list[dict[str, Any]] | None = None  # None: the forums could not be read this time (never "no posts")
+
+
+POSTS_WITHIN = timedelta(days=30)
+
+
+def parse_posts(forum: dict[str, Any], discussions: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """Recent discussions of a forum: announcements ("news") and the course forums. Text only, at most 300 characters."""
+    out = []
+    for d in discussions:
+        created = _ts(d.get("created") or d.get("timemodified"))
+        if not created or now - created > POSTS_WITHIN:
+            continue
+        did = int(d.get("discussion") or d["id"])
+        out.append({"external_id": did, "moodle_course": forum["course"], "forum": "news" if forum.get("type") == "news" else "forum",
+                    "subject": (d.get("subject") or d.get("name") or "").strip()[:200], "excerpt": text_of(d.get("message"), 300),
+                    "author": (d.get("userfullname") or "")[:100], "created": created.isoformat(),
+                    "url": f"{BASE}/mod/forum/discuss.php?d={did}"})
+    return out
 
 
 def _ts(value: int | None) -> datetime | None:
@@ -210,4 +229,17 @@ class Moodle:
             limitnum=50,
         )
         materials = [m for c in courses for m in parse_materials(c["id"], self.call("core_course_get_contents", courseid=c["id"]))]
-        return Snapshot(courses, parse_assignments(assignments, statuses) + parse_action_events(events), materials)
+        return Snapshot(courses, parse_assignments(assignments, statuses) + parse_action_events(events), materials,
+                        self.posts([c["id"] for c in courses], now))
+
+    def posts(self, course_ids: list[int], now: datetime) -> list[dict[str, Any]] | None:
+        """Announcements and forum posts. Best effort: a site that refuses the forum functions still syncs the rest,
+        and None tells the caller nothing is known (so nothing already kept is touched)."""
+        try:
+            forums = self.call("mod_forum_get_forums_by_courses", **{f"courseids[{i}]": c for i, c in enumerate(course_ids)})
+            # Only forums with discussions are opened: on 27/10 all 9 of the student's had none, so this cost nothing.
+            return [p for f in forums if f.get("numdiscussions")
+                    for p in parse_posts(f, self.call("mod_forum_get_forum_discussions", forumid=f["id"], sortorder=1,
+                                                      page=0, perpage=10).get("discussions", []), now)]
+        except (SourceError, httpx.HTTPError, KeyError, TypeError, ValueError):
+            return None

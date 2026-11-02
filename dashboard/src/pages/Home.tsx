@@ -243,7 +243,8 @@ function inRange(d: Deadline, range: Range, now: Date): boolean {
 
 function Deadlines({ items, now }: { items: Deadline[]; now: Date }) {
   const [range, setRange] = useState<Range>('7')
-  const shown = items.filter((d) => inRange(d, range, now))
+  // Past deadlines live in the checklist's «Em atraso», where they can be ticked off; this card is only what's next.
+  const shown = items.filter((d) => new Date(d.due_at) >= now && inRange(d, range, now))
   return (
     <div className="grid gap-3">
       <Segmented label="Intervalo de prazos" value={range} onChange={setRange} options={RANGES} />
