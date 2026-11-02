@@ -21,6 +21,8 @@ trap cleanup EXIT
 
 case $file in
   *.dump)
+    # Debian and Ubuntu keep these outside PATH; the glob sorts by version, so the newest ends up first.
+    for bin in /usr/lib/postgresql/*/bin; do [[ -d $bin ]] && PATH=$bin:$PATH; done
     command -v initdb > /dev/null && command -v pg_ctl > /dev/null || fail "initdb/pg_ctl not on PATH; cannot make a throwaway cluster"
     initdb -D "$work/data" -U peace --auth=trust -E UTF8 > /dev/null || fail "initdb failed"
     pg_ctl -D "$work/data" -o "-c listen_addresses= -k $work" -l "$work/log" -w start > /dev/null || fail "throwaway cluster did not start"
