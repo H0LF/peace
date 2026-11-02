@@ -13,16 +13,18 @@ ask() {  # ask "question" default -> answer (the default when not interactive)
   echo "${answer:-$2}"
 }
 
-# 1. System packages: PostgreSQL (binaries only; PEACE runs its own cluster), curl, Python 3 for the desktop agent.
+# 1. System packages: PostgreSQL (binaries only; PEACE runs its own cluster), curl, Python 3 for the desktop agent,
+# bubblewrap for the sandbox that grades code and runs assignment checks.
 missing=()
 for dir in /usr/lib/postgresql/*/bin; do [ -x "$dir/initdb" ] && PATH="$dir:$PATH"; done
 command -v initdb > /dev/null || missing+=(postgresql)
 command -v curl > /dev/null || missing+=(curl)
 command -v python3 > /dev/null || missing+=(python3)
+command -v bwrap > /dev/null || missing+=(bubblewrap)
 if ((${#missing[@]})); then
-  if command -v pacman > /dev/null; then cmd=(sudo pacman -S --needed postgresql curl python)
-  elif command -v apt-get > /dev/null; then cmd=(sudo apt-get install -y postgresql curl python3)
-  elif command -v dnf > /dev/null; then cmd=(sudo dnf install -y postgresql-server curl python3)
+  if command -v pacman > /dev/null; then cmd=(sudo pacman -S --needed postgresql curl python bubblewrap)
+  elif command -v apt-get > /dev/null; then cmd=(sudo apt-get install -y postgresql curl python3 bubblewrap)
+  elif command -v dnf > /dev/null; then cmd=(sudo dnf install -y postgresql-server curl python3 bubblewrap)
   else echo "Install these first: ${missing[*]}" >&2; exit 1
   fi
   echo "Missing: ${missing[*]}"

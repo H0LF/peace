@@ -23,6 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: Bubblewrap for the sandbox tests (Ubuntu's AppArmor blocks it unless relaxed)
+        run: |
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: uv sync --frozen --extra voice
       - run: uv run pytest -q
         env:
