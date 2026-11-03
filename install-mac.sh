@@ -50,7 +50,7 @@ pick_model() {
     printf '  %s) %s%s: %s%s\n' "$n" "${model:-Nenhum}" "$([ -n "$model" ] && echo ", $size GB")" "$label" "$mark"
   done < <(choices "$ram" "$free")
   # stdin is this script under curl | bash: the keyboard is the terminal. Enter or 30 s: the recommendation.
-  if [ -r /dev/tty ]; then
+  if (: < /dev/tty) 2> /dev/null; then  # really open it: with no terminal -r still says yes, and the open would end the install
     printf 'Número [%s]: ' "$best" > /dev/tty
     read -r -t 30 -n 1 answer < /dev/tty || true
     printf '\n' > /dev/tty
