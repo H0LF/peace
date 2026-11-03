@@ -443,6 +443,17 @@ def test_other_calendars_come_in_read_only_and_classified(fake, session, client)
     assert session.scalars(select(Event).where(Event.source == "google")).all() == []
 
 
+def test_events_made_by_another_peace_on_the_account_are_never_imported(fake, session):
+    connect(session)
+    mine = {"id": "x1", "summary": "Dentista", "start": {"dateTime": at(20).isoformat()}, "end": {"dateTime": at(21).isoformat()}}
+    copy = {"id": "peacee279", "summary": "EO (T1)", "start": {"dateTime": at(22).isoformat()}, "end": {"dateTime": at(23).isoformat()},
+            "extendedProperties": {"private": {"peace": "event:279"}}}
+    fake.add("primary", mine)
+    fake.add("primary", copy)
+    rnd(session)
+    assert [e.title for e in session.scalars(select(Event).where(Event.source == "google"))] == ["Dentista"]
+
+
 # --- errors, settings, disconnecting -------------------------------------------------------------------------------
 
 def test_a_revoked_permission_asks_to_reconnect(fake, session, client):

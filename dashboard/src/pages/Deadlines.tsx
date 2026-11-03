@@ -1,9 +1,9 @@
-import { Clock, ExternalLink, GraduationCap, Hourglass } from 'lucide-react'
+import { Clock, GraduationCap, Hourglass } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router'
-import { URGENCY_TONE } from '../components/tasks'
-import { Badge, CourseTag, Empty, ErrorNote, PageHeader, Segmented, Skeleton, cx } from '../components/ui'
-import { api, type Deadline } from '../lib/api'
+import { TaskDialog, TaskRow, URGENCY_TONE, useTaskActions } from '../components/tasks'
+import { Badge, Card, Checkbox, CourseTag, Empty, ErrorNote, PageHeader, Segmented, Skeleton, cx } from '../components/ui'
+import { api, type Deadline, type Task } from '../lib/api'
 import { countdown, dayHeading, dayKey, time, urgency, type Urgency } from '../lib/format'
 import { useApi, useNow } from '../lib/hooks'
 
@@ -23,6 +23,11 @@ export default function Deadlines() {
   const now = useNow()
   const [days, setDays] = useState('30')
   const data = useApi(() => api.deadlines(Number(days)), [days])
+  // Tasks live here too, so a student only needs this one list: tick them off, and the ones with no date are at the end.
+  const open = useApi(() => api.tasks({ status: ['TODO', 'IN_PROGRESS', 'BLOCKED'], limit: 500 }), [])
+  const actions = useTaskActions()
+  const [editing, setEditing] = useState<Task | null>(null)
+  const undated = (open.data ?? []).filter((t) => !t.due_at)
 
   const groups = new Map<string, Deadline[]>()
   for (const d of data.data ?? []) {
@@ -53,6 +58,7 @@ export default function Deadlines() {
           <Skeleton className="h-20" />
         </div>
       ) : groups.size === 0 ? (
+        !undated.length &&
         <Empty icon={<Hourglass className="size-6" />} title="Sem prazos neste horizonte" />
       ) : (
         <ol className="relative grid gap-6 before:absolute before:top-2 before:bottom-2 before:left-[7px] before:w-px before:bg-line">
@@ -67,6 +73,7 @@ export default function Deadlines() {
                 <ul className="grid gap-2">
                   {items.map((d) => {
                     const u = urgency(d.due_at, now)
+                    const task = d.type === 'exam' ? undefined : open.data?.find((t) => t.id === d.id)
                     return (
                       <li key={`${d.type}${d.id}`} className="animate-rise flex items-center gap-4 rounded-xl border border-line bg-surface px-4 py-3">
                         <div className={cx('grid size-9 shrink-0 place-items-center rounded-lg', d.type === 'exam' ? 'bg-exam-soft text-exam' : 'bg-surface-3 text-muted')}>
@@ -89,11 +96,7 @@ export default function Deadlines() {
                             {countdown(d.due_at, now)}
                           </Badge>
                         </div>
-                        {d.type !== 'exam' && (
-                          <Link to="/tarefas" aria-label="Ver em Tarefas" className="text-faint hover:text-text">
-                            <ExternalLink className="size-4" />
-                          </Link>
-                        )}
+                        {task && <Checkbox checked={false} label={`Concluir: ${d.title}`} onChange={() => void actions.setDone(task, true)} />}
                       </li>
                     )
                   })}
@@ -103,6 +106,14 @@ export default function Deadlines() {
           })}
         </ol>
       )}
+      {undated.length > 0 && (
+        <Card title="Sem data" className="mt-6" bodyClassName="px-1 pb-2">
+          <ul className="grid">
+            {undated.map((t) => <TaskRow key={t.id} task={t} now={now} onEdit={setEditing} />)}
+          </ul>
+        </Card>
+      )}
+      <TaskDialog open={!!editing} task={editing} onClose={() => setEditing(null)} />
     </div>
   )
 }

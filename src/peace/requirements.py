@@ -23,10 +23,14 @@ from sqlalchemy.orm import Session
 from peace import knowledge, library, sandbox
 from peace.auth import require_token
 from peace.db import get_engine, get_session
-from peace.llm import ask_json, llm_reachable, pause_reason
+from functools import partial
+from peace import llm
+from peace.llm import pause_reason
 from peace.mail_extract import containment, similarity
 from peace.models import REQUIREMENT_KINDS, AuditEvent, Check, Material, Proposal, Requirement, Task
 from peace.routes import get_now
+ask_json = partial(llm.ask_json, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 log = logging.getLogger(__name__)
 
@@ -81,16 +85,16 @@ def sources(session: Session, task: Task) -> list[tuple[Material | None, str]]:
     return out
 
 
-def chunks(text: str) -> list[str]:
-    """Pieces of at most CHUNK characters, cut at line ends, or after a sentence inside a very long line."""
+def chunks(text: str, size: int = CHUNK) -> list[str]:
+    """Pieces of at most `size` characters, cut at line ends, or after a sentence inside a very long line."""
     out, current = [], ""
     for line in text.splitlines(keepends=True):
-        while len(line) > CHUNK:  # a PDF page can come out as one long line: cut it after a sentence
-            cut = line.rfind(". ", 0, CHUNK) + 2
-            cut = cut if cut > CHUNK // 2 else CHUNK
+        while len(line) > size:  # a PDF page can come out as one long line: cut it after a sentence
+            cut = line.rfind(". ", 0, size) + 2
+            cut = cut if cut > size // 2 else size
             out.append(line[:cut])
             line = line[cut:]
-        if len(current) + len(line) > CHUNK and current:
+        if len(current) + len(line) > size and current:
             out.append(current)
             current = ""
         current += line

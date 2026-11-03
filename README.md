@@ -4,8 +4,10 @@ Secretária académica pessoal que corre no teu PC. Junta o Moodle e o inforestu
 avaliações, prazos e materiais das cadeiras. Planeia o teu estudo, avisa-te antes dos prazos e responde por texto
 ou por voz, em português.
 
-Tudo fica no teu computador: a base de dados, os ficheiros das cadeiras e as tuas credenciais. Nada é enviado
-para servidores de terceiros.
+Tudo fica no teu computador: a base de dados, os ficheiros das cadeiras e as tuas credenciais. Com o modelo local,
+as tuas perguntas e os teus ficheiros não saem do PC. Só saem dados se ligares um fornecedor de IA na nuvem (ChatGPT,
+OpenAI, OpenRouter), o Google Calendar ou os avisos no telemóvel, e és tu que decides o quê: vê
+[Privacidade](#privacidade).
 
 ## O que faz
 
@@ -18,6 +20,9 @@ para servidores de terceiros.
   agora?». Com um modelo local (opcional), também conversa e reescreve as respostas de forma natural, sem nunca
   mudar horas, datas ou números.
 - **Notificações** no ambiente de trabalho (Linux) antes de aulas, avaliações e prazos.
+- **Calendário sem repetições**: as sessões de estudo da mesma cadeira separadas só por uma pausa aparecem como um único
+  bloco, e abri-lo mostra as partes e os temas.
+- **O nome é teu**: em **Definições → Aparência** dás outro nome ao assistente e dizes «Jarvis, o que tenho amanhã?».
 - **Opcional**: voz (botão do microfone no browser, ou manter SUPER+Y premido e falar), ações no PC com Hyprland, separadores do Brave e cópia dos
   materiais para um cofre do Obsidian.
 
@@ -46,6 +51,22 @@ o utilizador e a palavra-passe, e carrega em **Sincronizar**. Para atualizar a P
 
 No Windows, as áreas de trabalho virtuais e as disposições de janelas guardadas não estão disponíveis (o Windows
 não tem uma forma oficial de as controlar); tudo o resto funciona como no Linux.
+
+## Instalar (Mac)
+
+Abre o **Terminal** (Cmd+Espaço → escreve «Terminal») e cola:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/H0LF/peace/main/install-mac.sh | bash
+```
+
+É o único comando, e é gratuito. Vê a memória e o disco do Mac e pergunta que modelo de IA queres, com uma recomendação;
+instala o **Docker Desktop** (o macOS pede a tua palavra-passe uma vez; ao continuar aceitas os
+[termos do Docker](https://www.docker.com/legal/docker-subscription-service-agreement)) e o **Ollama**, arranca a PEACE e
+abre-a com a sessão iniciada. Funciona em Macs Apple Silicon e Intel. O microfone funciona no browser; o agente do PC
+(notificações nativas, atalho de voz, ações no PC) ainda não existe para Mac.
+
+Para remover: `~/.peace/app/scripts/uninstall-mac.sh` (pergunta antes de apagar os teus dados).
 
 ## Instalar (Linux)
 
@@ -76,8 +97,8 @@ docker compose up -d --build
 grep PEACE_API_TOKEN secrets/peace.env  # token para o primeiro acesso a http://127.0.0.1:8420
 ```
 
-Com Docker não há notificações nem atalho de voz no ambiente de trabalho (o agente do PC é só para Linux); o botão do
-microfone no painel funciona.
+Com esta alternativa não há notificações nem atalho de voz no ambiente de trabalho (o agente do PC só é instalado pelos
+instaladores de Linux e Windows); o botão do microfone no painel funciona, e as vozes ouvem-se no browser.
 
 ## Configuração
 
@@ -91,12 +112,44 @@ O agente do PC lê `~/.config/peace/desktop.env`: `PEACE_PTT` (atalho de voz), `
 Para o correio reconhecer melhor a tua escola, junta a `peace.env` os domínios dela e os nomes dos seus serviços:
 `PEACE_ACADEMIC_DOMAINS=escola.pt,universidade.pt` e `PEACE_MAIL_SERVICES=nome|outro`.
 
+### Escolher a IA
+
+Em **Definições → IA e modelos** podes usar o modelo deste PC ou ligar a **OpenAI** ou o **OpenRouter** com a tua própria
+chave de API; o modelo muda-se depois no canto do Início, ou a falar («muda para o GPT», «qual é o teu cérebro?», «volta
+ao modelo anterior»). A chave confirma-se antes de ser guardada, nunca é mostrada de volta e fica no porta-chaves do
+sistema ou, onde não houver (Docker), num ficheiro encriptado. Pagas ao fornecedor: uma subscrição do ChatGPT Plus ou Pro
+não inclui crédito de API, mas podes entrar com ela diretamente, sem chave, e usá-la como fornecedor. Em **Definições → Privacidade e dados** decides o que pode sair do PC: a conversa e os documentos
+que pedes vão por omissão; a leitura automática e o email só se os ligares.
+
+### Privacidade
+
+- **Chaves e sessões** nunca são mostradas de volta nem escritas nos registos. O painel só escuta em `127.0.0.1`.
+- **Com um fornecedor na nuvem**, o que escolheres em Definições → Privacidade e dados segue para esse fornecedor, sujeito às
+  regras dele: a conversa e os documentos que pedes vão por omissão (incluindo, quando a pergunta precisa, o teu horário,
+  prazos e tarefas, e o texto inteiro dos ficheiros em «analisa todos os meus ficheiros»); a leitura automática e o email só
+  se os ligares. Com o modelo local, nada disto sai do PC.
+- **Avisos no telemóvel** (desligados por omissão) passam pelo servidor ntfy; **Google Calendar** só se o ligares.
+- A PEACE só contacta o GitHub para ver se há versão nova. Não há telemetria.
+
+### Modos e idioma
+
+A PEACE abre com o dia, os prazos, o estudo e as cadeiras na barra. Em Definições → Funcionalidades escolhes o que aparece, e
+as outras páginas estão sempre em «Todas as páginas». O idioma, português ou inglês, escolhe-se em Definições → Geral. A voz
+continua em português.
+
+### Planos de estudo
+
+Diz «cria um plano de estudo para o exame de BD», «tenho exame de RC na sexta, ajuda-me a preparar», «tenho tempo
+suficiente?» ou «perdi a sessão de ontem», ou usa a página **Estudo**. O plano usa o guia lido dos ficheiros, os conceitos,
+os temas dos ficheiros ou, sem nada disso, um valor por defeito, e diz sempre em que se baseou. Adapta-se quando a data, o
+calendário, o guia ou o teu progresso mudam. Para o ver no Google Calendar, liga «sessões de estudo» em Definições → Integrações.
+
 ### Extras opcionais
 
 - **Modelo local** ([Ollama](https://ollama.com)): `ollama pull gpt-oss:20b` (precisa de uma GPU com ~16 GB).
   Sem modelo, o assistente percebe os pedidos por palavras-chave e responde com frases fixas.
-- **Voz**: já vem incluída no Windows (serviço `voice` do Docker: Whisper para ouvir, Supertonic para falar). No
-  Linux: `uv sync --extra voice` e `uv run peace-voice` (ou o [VoiceStudio](https://github.com/debpalash/VoiceStudio)
+- **Voz**: já vem incluída no Windows, no Mac e na alternativa Docker (serviço `voice`: Whisper para ouvir, Supertonic para
+  falar, tudo no teu PC). Em Definições → Voz ouves e escolhes as vozes, mesmo sem o agente do PC. No Linux: `uv sync --extra voice` e `uv run peace-voice` (ou o [VoiceStudio](https://github.com/debpalash/VoiceStudio)
   em `127.0.0.1:3900`). O atalho de voz (SUPER+Y) muda-se em Definições → Voz.
 - **Decisões com o [Laya](https://huggingface.co/convaiinnovations/laya)** (experimental): `scripts/install-laya.sh`
   (Linux, ~2 GB, corre no CPU). Responde a escolhas, pontuações e sim/não em `POST /api/v1/decide`. Sem treino acerta
@@ -128,6 +181,13 @@ na mesma conta e abre esse link uma vez.
 
 ## Atualizar e desinstalar
 
+Em **Definições → Geral → Atualizações** vês a versão instalada e as novidades, e escolhes: avisar, instalar sozinha, ou
+não procurar. Só são oferecidas versões publicadas e assinadas. A atualização verifica a assinatura, faz uma cópia da base
+de dados, troca o código e confirma que a PEACE arranca; se não arrancar, repõe a versão anterior e os dados. Os teus dados,
+chaves e definições ficam fora da pasta do código. Sincronizar o Moodle é outra coisa e nunca muda o código.
+
+Também podes atualizar à mão em Linux:
+
 ```sh
 git pull && ./install.sh && systemctl --user restart peace-api peace-worker peace-desktop
 ```
@@ -143,6 +203,10 @@ Desinstalar: `systemctl --user disable --now peace-api peace-worker peace-deskto
 - As credenciais das integrações ficam na base de dados local e nunca são mostradas de volta no painel. As cópias
   de segurança (`scripts/backup.sh`) incluem-nas: guarda-as num sítio seguro.
 - O conteúdo do Moodle e do inforestudante é tratado como dados, nunca como instruções para o assistente.
+- As chaves de API não vão para a base de dados nem para as cópias de segurança. Num ficheiro encriptado, a chave de
+  encriptação deriva do token da PEACE, que está noutro sítio; quem conseguir ler ambos com a tua conta consegue ler as
+  chaves, como acontece com qualquer segredo que um serviço tenha de usar sozinho.
+- Mudar o token da PEACE torna esse ficheiro ilegível: basta voltar a escrever as chaves.
 
 ## Desenvolver
 

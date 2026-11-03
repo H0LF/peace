@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test:scene": "node scripts/orb.test.mjs",
+    "test:i18n": "node scripts/i18n-extract.mjs",
     "test:holo": "node --test scripts/holo.test.mjs",
     "icons": "node scripts/render-icon.mjs && rsvg-convert -w 192 -h 192 -o public/icon-192.png public/icon.svg && rsvg-convert -w 512 -h 512 -o public/icon-512.png public/icon.svg"
   },

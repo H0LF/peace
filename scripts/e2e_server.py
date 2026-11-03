@@ -109,6 +109,9 @@ box.add("INBOX", raw("Loja <news@loja.pt>", "Promoções de outono", 45, "List-U
 box.add("INBOX", raw("Moodle <noreply@moodle.example.pt>", "Novo aviso no fórum", 40), 40, ["\\Seen"])
 box.add(TRASH, raw("a@b.pt", "Apagado por mim", 1), 1)
 with Session(get_engine()) as s:
+    s.add(Preference(key="ui", value={"language": "pt", "features": dict.fromkeys(("holo", "graph", "mail", "mastery"), True), "dock": [
+        "/", "/calendario", "/estudo", "/tarefas", "/conhecimento", "/ficheiros", "/prazos", "/cadeiras", "/definicoes",
+        "tool:all", "tool:new", "tool:sync", "tool:holo", "tool:shortcuts", "tool:hide"]}))  # most tests walk every page; simplify.spec.ts covers the defaults
     s.add(Preference(key="integrations", value={"email": {"enabled": True, "url": "https://webmail.example.pt",
                                                           "username": "aluno", "password": "e2e", "clean_junk": True, "quota_mb": 100}}))
     s.commit()

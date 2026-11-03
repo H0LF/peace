@@ -26,10 +26,14 @@ from peace import sandbox
 from peace.auth import require_token
 from peace.db import get_engine, get_session
 from peace.library import data_dir
-from peace.llm import ask_json, llm_reachable, pause_reason, see_json, vision_unavailable
+from functools import partial
+from peace import llm
+from peace.llm import pause_reason, see_json, vision_unavailable  # images stay on this computer
 from peace.mail_extract import containment
 from peace.mastery import HYPHENS, pt_pt
 from peace.models import QUESTION_KINDS, Concept, Course, ExamQuestion, PastExam
+ask_json = partial(llm.ask_json, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 log = logging.getLogger(__name__)
 ACCEPTED = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heic",

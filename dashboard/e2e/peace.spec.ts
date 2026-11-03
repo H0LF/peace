@@ -33,7 +33,7 @@ test('the installer link logs in once and leaves no token in the address', async
 
 test('notification settings queue a native desktop test and explain visibility limits', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=avancado')
   const diagnostics = page.getByRole('region', { name: 'Diagnóstico de notificações' })
   await expect(diagnostics.getByText(/A aceitação pelo serviço não confirma/)).toBeVisible()
   const posted = page.waitForResponse((r) => r.url().endsWith('/api/v1/notifications/test') && r.request().method() === 'POST')
@@ -384,7 +384,7 @@ test('google calendar: connect, status, sessions toggle and disconnect', async (
     await route.fulfill(method === 'DELETE' ? { status: 204 } : { json: state })
   })
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=integracoes')
   await expect(page.getByRole('link', { name: 'Ligar Google Calendar' })).toHaveAttribute('href', '/auth/google/start?calendar=1')
   state = { ...state, connected: true, email: 'ana@gmail.com', last_sync: new Date().toISOString(), readonly_calendars: 2 }
   await page.goto('/definicoes?google=ligado')
@@ -461,12 +461,13 @@ test('planning the week creates sessions that can be completed', async ({ page }
 
 test('settings save planner preferences and switch theme', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=estudo')
   await page.getByLabel('Duração de cada sessão (min)').fill('45')
   await page.getByRole('button', { name: 'Guardar preferências' }).click()
   await expect(page.getByText(/Preferências guardadas/)).toBeVisible()
   await page.reload()
   await expect(page.getByLabel('Duração de cada sessão (min)')).toHaveValue('45')
+  await page.goto('/definicoes?separador=notificacoes')
   await page.getByLabel('Silêncio a partir de').fill('22:30')
   await page.getByRole('checkbox', { name: 'Novidades nos sites' }).uncheck()
   await page.getByRole('button', { name: 'Guardar notificações' }).click()
@@ -474,20 +475,21 @@ test('settings save planner preferences and switch theme', async ({ page }) => {
   await page.reload()
   await expect(page.getByLabel('Silêncio a partir de')).toHaveValue('22:30')
   await expect(page.getByRole('checkbox', { name: 'Novidades nos sites' })).not.toBeChecked()
+  await page.goto('/definicoes?separador=aparencia')
   await page.getByRole('tab', { name: 'Claro' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.goto('/painel')
   await expect(page.getByText('Recomendado agora')).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.screenshot({ path: 'test-results/home-light.png', fullPage: true, animations: 'disabled' })
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=aparencia')
   await page.getByRole('tab', { name: 'Escuro' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 })
 
 test('appearance: accent colour previews live, persists and adapts the hologram', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=aparencia')
   const accent = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
   await expect.poll(accent).toBe('#ffb547')
   await page.getByLabel('O teu nome').fill('Ana')
@@ -505,12 +507,12 @@ test('appearance: accent colour previews live, persists and adapts the hologram'
   await expect(page.getByText('Boa tarde, Ana').or(page.getByText('Bom dia, Ana')).or(page.getByText('Boa noite, Ana'))).toBeVisible()
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--holo').trim())).toBe('#00d3ff')
   // Unsaved previews are undone when leaving Settings.
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=aparencia')
   await page.getByRole('button', { name: 'Rosa' }).click()
   await expect.poll(accent).toBe('#f472b6')
   await page.getByRole('link', { name: 'Início' }).first().click()
   await expect.poll(accent).toBe('#00d3ff')
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=aparencia')
   await page.getByRole('button', { name: 'Repor dourado' }).click()
   await page.getByLabel('O teu nome').fill('')
   await page.getByRole('button', { name: 'Guardar aparência' }).click()
@@ -519,9 +521,9 @@ test('appearance: accent colour previews live, persists and adapts the hologram'
 
 test('voice settings: push-to-talk key and spoken replies persist; only real voices are offered', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=voz')
   await expect(page.getByText('O agente do PC está desligado')).toBeVisible()
-  await expect(page.getByLabel('Voz', { exact: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Voz', exact: true })).toBeDisabled()
   await expect(page.getByLabel('Microfone', { exact: true })).toHaveValue('')
   await expect(page.getByLabel('Saída de áudio', { exact: true })).toHaveValue('')
   await expect(page.getByRole('button', { name: 'Testar microfone (5 s)' })).toBeDisabled()
@@ -543,7 +545,7 @@ test('voice settings: push-to-talk key and spoken replies persist; only real voi
 
 test('phone: a secret topic is shown and the choice is kept', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=notificacoes')
   const topic = page.locator('code').filter({ hasText: /^peace-/ })
   await expect(topic).toBeVisible()
   const name = await topic.textContent()
@@ -558,7 +560,7 @@ test('phone: a secret topic is shown and the choice is kept', async ({ page }) =
 
 test('integrations: a source can be switched off and its password is never shown back', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=integracoes')
   const health = page.locator('ul').filter({ hasText: 'Moodle' }).first()
   await expect(health).toContainText('Inforestudante')
   await page.getByRole('checkbox', { name: 'Ligar Inforestudante' }).uncheck()
@@ -611,7 +613,7 @@ test('mobile layout: drawer navigation and no horizontal scroll', async ({ page 
 
 test('logging out ends the session', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=geral')
   await page.getByRole('button', { name: 'Terminar sessão' }).click()
   await expect(page).toHaveURL('/entrar')
   await page.goto('/')
@@ -620,7 +622,7 @@ test('logging out ends the session', async ({ page }) => {
 
 test('diagnostics: every part of PEACE is listed with its state and code', async ({ page }) => {
   await login(page)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=avancado')
   const card = page.getByRole('heading', { name: 'Diagnóstico' }).locator('xpath=ancestor::section[1]')
   await expect(card.getByText('Base de dados', { exact: true })).toBeVisible()
   await expect(card.getByText('[agent_offline]')).toBeVisible()
@@ -670,7 +672,7 @@ test('obsidian: pick a vault the desktop found; links open it', async ({ page })
     { name: 'Estudo', path: '/home/ana/Estudo' },
   ]
   expect((await page.request.post('/api/v1/desktop/heartbeat', { data: { capabilities: { vaults } } })).status()).toBe(204)
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=integracoes')
   await expect(page.getByText(/no cofre «Peace Vault»/)).toBeVisible()
   await page.getByLabel('Cofre do Obsidian').selectOption('/home/ana/Estudo')
   await expect(page.getByText('Cofre guardado')).toBeVisible()
@@ -697,7 +699,7 @@ test('rever: a moved deadline is previewed, applied, undone; the rules are kept'
   await expect(page.getByText('Plano reposto como estava')).toBeVisible()
   await expect(row).toContainText('desfeita')
 
-  await page.goto('/definicoes')
+  await page.goto('/definicoes?separador=avancado')
   await page.getByRole('checkbox', { name: 'Um prazo é adiado' }).check()
   await page.getByRole('button', { name: 'Guardar regras' }).click()
   await expect(page.getByText('Regras guardadas')).toBeVisible()

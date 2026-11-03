@@ -1,0 +1,57 @@
+(prefers-reduced-motion: reduce)
+--holo: {0}; --holo-pale: {1}; --holo-dim: {2};
+--holo: {0}; --holo-pale: {1}; --holo-dim: {2}; --line: {3}; --line-strong: {4};
+02 - University/Courses/…/Materiais
+56px repeat({0}, minmax(0, 1fr))
+ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
+BLOCKED
+CANCELLED
+COMPLETED
+CPU
+CTRL + ALT
+Checklist
+Escape
+GPU
+GeoGebra
+Google Calendar
+Graphify
+HEX
+Holo Hands
+INPUT
+IN_PROGRESS
+Inforestudante
+Link
+Local
+Manual
+Moodle
+NFD
+Normal
+Obsidian
+PDF
+PEACE
+Peace Vault
+Python
+SELECT
+SQL (SQLite)
+SUPER
+SUPER + ALT
+SUPER + SHIFT
+Slides
+TEXTAREA
+TODO
+VIDEO
+blur({0}px)
+hsl({0} 70% 62%)
+hsl({0} 72% 66%)
+html[data-theme="dark"] { --accent: {0}; --accent-soft: rgb({1} / 0.12); --accent-ink: {2}; --glow: rgb({3} / 0.35); {4} }
+html[data-theme="light"] { --accent: {0}; --accent-soft: rgb({1} / 0.1); --accent-ink: {2}; --glow: transparent; {3} }
+input, textarea, select, [contenteditable]
+input, textarea, select, [contenteditable], [role=textbox], dialog[open]
+noreferrer noopener
+obsidian://open?vault={0}&file={1}
+rgba({0},{1})
+translate({0}px, {1}px)
+translate3d(-70%, 0, 120px) rotateY(32deg)
+translate3d(0, 60px, -220px) scale(0.8)
+translate3d(0, {0}px, {1}px)
+xMidYMid slice

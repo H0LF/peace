@@ -7,6 +7,7 @@ import pytest
 
 from peace.api import app
 from peace.assistant import cmd_review, match_rules
+from peace.proposals import auto_apply
 from peace.models import AuditEvent, Notification, Proposal, StudySession, Task
 from peace.notifications import generate
 from peace.routes import get_now
@@ -187,3 +188,39 @@ def test_asking_what_to_review_never_waits_for_the_model(session, monkeypatch):
 
     monkeypatch.setattr(assistant, "llm_reachable", lambda: (_ for _ in ()).throw(AssertionError("model asked")))
     assert assistant._decide(session, "o que há para rever?", NOW.date(), NOW)[:1] == ("review",)
+
+
+def test_auto_apply_is_the_default_notifies_and_can_be_undone(session, client, at_now):
+    task, old = moved_earlier(session)
+    assert [p.kind for p in auto_apply(session, NOW)] == ["replan"]
+    session.commit()
+    proposal = session.query(Proposal).one()
+    assert proposal.status == "applied"
+    assert session.query(AuditEvent).filter_by(action="proposal.apply").one().actor == "peace"
+    note = session.query(Notification).filter(Notification.key == f"auto:{proposal.id}").one()
+    assert note.url == "/rever" and proposal.title in note.body
+    assert client.post(f"/api/v1/proposals/{proposal.id}/undo").json()["status"] == "undone"
+
+
+def test_switching_auto_apply_off_leaves_everything_for_the_student(session, client, at_now):
+    moved_earlier(session)
+    client.put("/api/v1/preferences/review", json={**client.get("/api/v1/preferences/review").json(), "auto_apply": False})
+    session.expire_all()
+    assert auto_apply(session, NOW) == []
+    assert session.query(Proposal).one().status == "pending"
+
+
+def test_auto_apply_always_asks_before_moving_mail_or_leaving_work_out(session):
+    for kind in ("mail_cleanup", "recover_drop"):
+        session.add(Proposal(key=kind, kind=kind, title=kind, reason="", evidence=[]))
+    session.commit()
+    assert auto_apply(session, NOW) == []
+    assert {p.status for p in session.query(Proposal)} == {"pending"}
+
+
+def test_auto_apply_keeps_going_past_one_that_no_longer_applies(session, client, at_now):
+    task, _ = moved_earlier(session)
+    client.patch(f"/api/v1/tasks/{task.id}", json={"status": "COMPLETED"})
+    session.expire_all()
+    assert auto_apply(session, NOW) == []
+    assert session.query(Proposal).one().status == "pending"

@@ -1,4 +1,7 @@
-"""Client for the local language model (Ollama on the desktop GPU), shared by the assistant and the worker."""
+"""Client for the language model, shared by the assistant and the worker: Ollama on this computer, or a cloud provider
+the student connected. What may reach the provider is decided here, per purpose, never by the calling module:
+"local" stays on this computer whatever is chosen, the others follow the student's switches (SHARE_DEFAULTS).
+"""
 
 import json
 import logging
@@ -10,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from peace import providers
 
 log = logging.getLogger(__name__)
 
@@ -33,15 +38,55 @@ DRM = Path(os.environ.get("PEACE_DRM_DIR", "/sys/class/drm"))
 MEMINFO = Path("/proc/meminfo")
 
 
+def can_search(purpose: str = "chat") -> bool:
+    return bool((cloud := route(purpose)) and providers.can_search(cloud[0]))
+
+
 def _request(method: str, path: str, **kw: Any) -> httpx.Response:
     transport = httpx.HTTPTransport(uds=LLM_SOCKET) if LLM_SOCKET else None
     with httpx.Client(transport=transport, base_url=LLM_URL) as client:
         return client.request(method, path, **kw)
 
 
-def _llm(method: str, path: str, **kw: Any) -> httpx.Response:
+# background: reading every file in the library unasked, which can cost real credit on a provider.
+SHARE_DEFAULTS = {"chat": True, "documents": True, "background": False, "mail": False}
+
+
+def ai_settings() -> dict[str, Any]:
+    """The "assistant" preference: provider ("" = local), cloud_model, favourites, previous, share, model (local)."""
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.orm import Session
+
+    from peace.db import get_engine
+    from peace.models import Preference
+
+    try:
+        with Session(get_engine()) as session:
+            row = session.get(Preference, "assistant")
+    except (SQLAlchemyError, KeyError, OSError):  # no database configured or reachable: the environment decides
+        row = None
+    return dict(row.value) if row else {}
+
+
+def route(purpose: str = "local") -> tuple[str, str] | None:
+    """(provider, model) when this purpose goes to the cloud; None when it stays on this computer."""
+    if purpose == "local":
+        return None
+    prefs = ai_settings()
+    provider, model = prefs.get("provider"), prefs.get("cloud_model")
+    if provider not in providers.PROVIDERS or not model:
+        return None
+    return (provider, model) if (SHARE_DEFAULTS | prefs.get("share", {})).get(purpose) else None
+
+
+def _llm(method: str, path: str, purpose: str = "local", **kw: Any) -> httpx.Response:
     if path == "/api/chat":
-        model = kw.get("json", {}).get("model")
+        body = kw.get("json", {})
+        if body.get("model") != VISION_MODEL:
+            if cloud := route(purpose):
+                return providers.chat(*cloud, body, kw.get("timeout", LLM_TIMEOUT))
+            kw["json"] = body = body | {"model": local_model()}  # callers name the active model, which may be a cloud one
+        model = body.get("model")
         # A cold load outlasts any caller's timeout, and a caller giving up cancels the load, so it would never finish.
         # The load runs on its own and the caller gets "not available yet" (it answers without the model meanwhile).
         if model != VISION_MODEL and not any(m["name"] == model for m in loaded_models()):
@@ -104,9 +149,15 @@ def pick_model(installed: list[str], wanted: str) -> str | None:
     return next((m for m in PREFERRED if m in installed), None)
 
 
-def current_model() -> str:
-    """The model in use (as of the last check); the first preferred one when nothing is known yet."""
+def local_model() -> str:
+    """The local model in use (as of the last check); the first preferred one when nothing is known yet."""
     return _reachable["model"] or wanted_model() or PREFERRED[0]
+
+
+def current_model() -> str:
+    """The model the conversation is using."""
+    cloud = route("chat")
+    return cloud[1] if cloud else local_model()
 
 
 def installed_models() -> list[str]:
@@ -114,9 +165,11 @@ def installed_models() -> list[str]:
     return _reachable["installed"]
 
 
-def llm_reachable() -> bool:
+def llm_reachable(purpose: str = "local") -> bool:
     """Is a usable model being served right now, without fighting other programs for memory? Cached for 30 s so
     status polling stays cheap; resources are only read here, never polled."""
+    if cloud := route(purpose):
+        return providers.usable(cloud[0])
     if _loading["model"]:  # its memory is filling up: that is not another program competing
         _reachable.update(ok=False, model=_loading["model"], paused=LOADING)
         return False
@@ -262,7 +315,11 @@ def _keep_alive_seconds() -> float:
 
 def pause_reason() -> str | None:
     """Why the model is not used right now although it is installed (from the last check), for the status."""
+    if cloud := route("chat"):
+        return providers.error(cloud[0])
     return _reachable["paused"]
+
+
 def forget_model_check() -> None:
     """The choice changed in Settings: check again on the next call."""
     _reachable["at"] = -60.0
@@ -273,14 +330,13 @@ def mark_unreachable() -> None:
     _reachable.update(at=time.monotonic(), ok=False)
 
 
-def ask_json(system: str, user: str, schema: dict[str, Any], timeout: float = 180) -> dict[str, Any] | None:
+def ask_json(system: str, user: str, schema: dict[str, Any], timeout: float = 180, purpose: str = "local") -> dict[str, Any] | None:
     """One answer forced into `schema` (the model has no tools; `user` carries untrusted text as data).
     None when the model failed (not the input's fault: try again later); {} when it answered outside the schema."""
     import json
-    import logging
 
     try:
-        r = _llm("POST", "/api/chat", timeout=timeout, json={
+        r = _llm("POST", "/api/chat", purpose=purpose, timeout=timeout, json={
             "model": current_model(), "stream": False, "think": "low", "format": schema, "keep_alive": KEEP_ALIVE,
             "options": LLM_OPTIONS, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         })

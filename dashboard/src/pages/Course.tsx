@@ -1,9 +1,11 @@
-import { ArrowLeft, BookOpen, ExternalLink, GraduationCap, MapPin } from 'lucide-react'
+import { ArrowLeft, ExternalLink, GraduationCap, MapPin } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { ConceptsCard } from '../components/concepts'
 import { PastExamsCard, PracticeCard } from '../components/exams'
-import { MaterialList } from '../components/materials'
+import { CourseFiles } from '../components/CourseFiles'
+import { PrepareButton } from '../components/StudyPlans'
+import { useFeature } from '../lib/ui'
 import { TaskDialog, TaskRow } from '../components/tasks'
 import { Badge, Card, Empty, ErrorNote, Progress, Skeleton, courseColor } from '../components/ui'
 import { api, type Task } from '../lib/api'
@@ -13,6 +15,8 @@ import { useApi, useNow } from '../lib/hooks'
 export default function Course() {
   const id = Number(useParams().id)
   const now = useNow()
+  const mastery = useFeature('mastery')
+  const practice = useFeature('practice')
   const [editing, setEditing] = useState<Task | null>(null)
   const data = useApi(
     () =>
@@ -99,17 +103,12 @@ export default function Course() {
               </details>
             )}
           </Card>
-          <ConceptsCard courseId={id} />
-          <PracticeCard courseId={id} />
-          <PastExamsCard courseId={id} />
           <Card title="Materiais" action={materials.length > 0 && <Badge>{materials.filter((m) => m.kind === 'file').length} ficheiros</Badge>}>
-            <MaterialList items={materials} now={now} />
+            <CourseFiles items={materials} now={now} />
           </Card>
-          <Card title="Notas">
-            <Empty icon={<BookOpen className="size-5" />} title="As tuas notas do Obsidian aparecem aqui">
-              Indexação do cofre prevista na fase 7.
-            </Empty>
-          </Card>
+          {mastery && <ConceptsCard courseId={id} />}
+          {practice && <PracticeCard courseId={id} />}
+          {mastery && <PastExamsCard courseId={id} />}
         </div>
         <div className="grid gap-6">
           <Card title="Avaliações">
@@ -125,6 +124,7 @@ export default function Course() {
                       </div>
                     </div>
                     {new Date(e.ends_at) > now ? <Badge tone="exam">{countdown(e.starts_at, now)}</Badge> : <Badge>passou</Badge>}
+                    {new Date(e.starts_at) > now && <PrepareButton eventId={e.id} />}
                   </li>
                 ))}
               </ul>

@@ -14,41 +14,65 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  RefreshCw,
+  Hand,
   Settings,
   SquareCheckBig,
   X,
   Mail,
 } from 'lucide-react'
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { api } from '../lib/api'
 import { ago } from '../lib/format'
 import { useApi, useNow } from '../lib/hooks'
 import { applyAccent } from '../lib/theme'
+import { setAssistantName } from '../lib/i18n'
+import { featureOn, useUi, useUiSync, type Feature } from '../lib/ui'
+import type { UiPrefs } from '../lib/api'
 import { setVaultName } from './materials'
 import { healthTone, SOURCE_NAME } from './sync'
-import { HoloButton, HoloHandsProvider } from '../holo/HoloHands'
+import { HoloButton, HoloHandsProvider, useHoloControls } from '../holo/HoloHands'
 import { TaskDialog } from './tasks'
 import { Button, Dialog, Kbd, cx } from './ui'
 import { VoiceCue } from './voice'
 
-// `rail`: shown as an icon in the dock; the rest live in the drawer, the shortcuts and the pages.
-const NAV = [
+// `rail`: on the bar until the student changes it. Every page is in the list of all pages and has a shortcut.
+export const NAV = [
   { to: '/', label: 'Início', icon: House, key: 'h', rail: true },
   { to: '/calendario', label: 'Calendário', icon: CalendarDays, key: 'c', rail: true },
   { to: '/painel', label: 'Painel', icon: LayoutList, key: 'd', rail: false },
   { to: '/estudo', label: 'Estudo', icon: GraduationCap, key: 'e', rail: true },
-  { to: '/tarefas', label: 'Tarefas', icon: SquareCheckBig, key: 't', rail: true },
-  { to: '/conhecimento', label: 'Graphify', icon: Network, key: 'k', rail: true },
+  { to: '/tarefas', label: 'Tarefas', icon: SquareCheckBig, key: 't', rail: false },
+  { feature: 'graph' as const, to: '/conhecimento', label: 'Graphify', icon: Network, key: 'k', rail: true },
   { to: '/rever', label: 'Rever', icon: ClipboardCheck, key: 'r', rail: false },
-  { to: '/correio', label: 'Correio', icon: Mail, key: 'm', rail: false },
-  { to: '/ficheiros', label: 'Ficheiros', icon: FolderOpen, key: 'f', rail: true },
+  { feature: 'mail' as const, to: '/correio', label: 'Correio', icon: Mail, key: 'm', rail: false },
+  { to: '/ficheiros', label: 'Ficheiros', icon: FolderOpen, key: 'f', rail: false },
   { to: '/prazos', label: 'Prazos', icon: Hourglass, key: 'p', rail: true },
   { to: '/cadeiras', label: 'Cadeiras', icon: BookOpen, key: 'u', rail: true },
   { to: '/atividade', label: 'Atividade', icon: Activity, key: 'a', rail: false },
-  { to: '/definicoes', label: 'Definições', icon: Settings, key: 's', rail: true },
+  { to: '/definicoes', label: 'Definições', icon: Settings, key: 's', rail: false },
 ]
 const RAIL_KEY = 'peace-rail'
+
+// The bar's other buttons. Pages use their address as their id.
+export const DOCK_TOOLS = [
+  { id: 'tool:all', label: 'Todas as páginas', icon: MenuIcon },
+  { id: 'tool:new', label: 'Nova tarefa', icon: Plus },
+  { id: 'tool:sync', label: 'Estado da sincronização', icon: RefreshCw },
+  { id: 'tool:holo', label: 'Holo Hands', icon: Hand, feature: 'holo' as const },
+  { id: 'tool:shortcuts', label: 'Atalhos de teclado', icon: Keyboard },
+  { id: 'tool:hide', label: 'Esconder barra lateral', icon: PanelLeftClose },
+]
+/** What the bar shows: the student's choice in their order, else the default. Disabled features never show. */
+export function dockIds(p: UiPrefs): string[] {
+  const on = (feature?: Feature) => !feature || featureOn(p, feature)
+  const pages = NAV.filter((n) => on(n.feature))
+  const usable = new Set<string>([...pages.map((n) => n.to), ...DOCK_TOOLS.filter((t) => on(t.feature)).map((t) => t.id)])
+  const chosen = p.dock ?? [...pages.filter((n) => n.rail).map((n) => n.to), ...DOCK_TOOLS.map((t) => t.id)]
+  // The sync status always closes the bar, whatever order was saved.
+  return chosen.filter((id) => usable.has(id)).sort((a, b) => +(a === 'tool:sync') - +(b === 'tool:sync'))
+}
 
 const typing = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement
@@ -116,7 +140,15 @@ function PageVoiceCue() {
   return state === 'idle' ? null : <div className="fixed top-4 left-1/2 z-40 -translate-x-1/2"><VoiceCue state={state} /></div>
 }
 
+const TOOL = 'grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text'
+
 function Shell() {
+  useUiSync()
+  const ui = useUi()
+  const nav = NAV.filter((n) => !n.feature || featureOn(ui, n.feature))
+  // Shortcuts reach every page, except a feature the student turned off.
+  const shortcuts = useMemo(() => NAV.filter((n) => !n.feature || ui.features[n.feature] !== false), [ui.features])
+  useHoloControls(featureOn(ui, 'holo'))
   const navigate = useNavigate()
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -128,7 +160,10 @@ function Shell() {
   useEffect(() => setMobileOpen(false), [location.pathname])
   // The saved accent (index.html already painted the cached one; this catches changes from another device).
   useEffect(() => {
-    api.appearance().then((a) => applyAccent(a.accent), () => undefined)
+    api.appearance().then((a) => {
+      applyAccent(a.accent)
+      setAssistantName(a.assistant_name)
+    }, () => undefined)
     api.obsidian().then((o) => o.vault && setVaultName(o.vault.name), () => undefined)
   }, [])
 
@@ -159,7 +194,7 @@ function Shell() {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || typing(e)) return
       if (pendingG && Date.now() - pendingG < 1200) {
-        const item = NAV.find((n) => n.key === e.key.toLowerCase())
+        const item = shortcuts.find((n) => n.key === e.key.toLowerCase())
         pendingG = 0
         if (item) {
           e.preventDefault()
@@ -175,11 +210,11 @@ function Shell() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [navigate])
+  }, [navigate, shortcuts])
 
   const drawerNav = (
     <nav aria-label="Principal" className="grid gap-0.5">
-      {NAV.map(({ to, label, icon: Icon }) => (
+      {nav.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}
@@ -212,45 +247,67 @@ function Shell() {
   return (
     <div className="flex min-h-dvh">
       {rail && (
-        <aside className="glass fixed bottom-4 left-1/2 z-30 hidden -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5 lg:flex">
+        <aside className="glass fixed inset-x-0 bottom-4 z-30 mx-auto hidden w-fit max-w-[calc(100vw-2rem)] items-center gap-1 rounded-2xl px-2 py-1.5 lg:flex">
           <NavLink to="/" aria-label="PEACE, início" className="grid size-10 place-items-center">
             <OrbMark className="size-7" />
           </NavLink>
           <span aria-hidden className="mx-1 h-6 w-px bg-line" />
-          <nav aria-label="Principal" className="flex items-center gap-1">
-            {NAV.filter((n) => n.rail).map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={to === '/'}
-                title={label}
-                aria-label={label}
-                className={({ isActive }) =>
-                  cx(
-                    'grid size-10 place-items-center rounded-xl border transition-colors',
-                    isActive ? 'rail-active border-accent/30 bg-accent-soft text-accent' : 'border-transparent text-muted hover:bg-surface-2 hover:text-text',
-                  )
-                }
-              >
-                <Icon className="size-[18px]" strokeWidth={1.75} />
-              </NavLink>
-            ))}
+          <nav aria-label="Principal" className="flex flex-wrap items-center justify-center gap-1">
+            {dockIds(ui).map((id, i, ids) => {
+              const page = NAV.find((n) => n.to === id)
+              const dividerBefore = i > 0 && !!NAV.find((n) => n.to === ids[i - 1]) !== !!page
+              const divider = dividerBefore && <span aria-hidden className="mx-1 h-6 w-px bg-line" />
+              if (page) {
+                const Icon = page.icon
+                return (
+                  <Fragment key={id}>
+                    {divider}
+                    <NavLink
+                      to={page.to}
+                      end={page.to === '/'}
+                      title={page.label}
+                      aria-label={page.label}
+                      className={({ isActive }) =>
+                        cx(
+                          'grid size-10 place-items-center rounded-xl border transition-colors',
+                          isActive ? 'rail-active border-accent/30 bg-accent-soft text-accent' : 'border-transparent text-muted hover:bg-surface-2 hover:text-text',
+                        )
+                      }
+                    >
+                      <Icon className="size-[18px]" strokeWidth={1.75} />
+                    </NavLink>
+                  </Fragment>
+                )
+              }
+              return (
+                <Fragment key={id}>
+                  {divider}
+                  {id === 'tool:all' && (
+                    <button type="button" title="Todas as páginas" aria-label="Todas as páginas" onClick={() => setMobileOpen(true)} className={TOOL}>
+                      <MenuIcon className="size-4" />
+                    </button>
+                  )}
+                  {id === 'tool:new' && (
+                    <button type="button" title="Nova tarefa (n)" aria-label="Nova tarefa" onClick={() => setNewTask(true)} className={TOOL}>
+                      <Plus className="size-4" />
+                    </button>
+                  )}
+                  {id === 'tool:sync' && <SyncDot />}
+                  {id === 'tool:holo' && <HoloButton />}
+                  {id === 'tool:shortcuts' && (
+                    <button type="button" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado" onClick={() => setHelp(true)} className={TOOL}>
+                      <Keyboard className="size-4" />
+                    </button>
+                  )}
+                  {id === 'tool:hide' && (
+                    <button ref={railToggle} type="button" title="Esconder barra lateral" aria-label="Esconder barra lateral" onClick={toggleRail} className={TOOL}>
+                      <PanelLeftClose className="size-4" />
+                    </button>
+                  )}
+                </Fragment>
+              )
+            })}
           </nav>
-          <span aria-hidden className="mx-1 h-6 w-px bg-line" />
-          <button type="button" title="Todas as páginas" aria-label="Todas as páginas" onClick={() => setMobileOpen(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
-            <MenuIcon className="size-4" />
-          </button>
-          <button type="button" title="Nova tarefa (n)" aria-label="Nova tarefa" onClick={() => setNewTask(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
-            <Plus className="size-4" />
-          </button>
-          <SyncDot />
-          <HoloButton />
-          <button type="button" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado" onClick={() => setHelp(true)} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
-            <Keyboard className="size-4" />
-          </button>
-          <button ref={railToggle} type="button" title="Esconder barra lateral" aria-label="Esconder barra lateral" onClick={toggleRail} className="grid size-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text">
-            <PanelLeftClose className="size-4" />
-          </button>
         </aside>
       )}
       {!rail && (
@@ -302,7 +359,7 @@ function Shell() {
       <TaskDialog open={newTask} onClose={() => setNewTask(false)} />
       <Dialog open={help} onClose={() => setHelp(false)} title="Atalhos de teclado">
         <ul className="grid gap-2 text-[13px]">
-          {NAV.map((n) => (
+          {shortcuts.map((n) => (
             <li key={n.key} className="flex items-center justify-between">
               <span className="text-muted">{n.label}</span>
               <span className="flex gap-1">

@@ -19,6 +19,7 @@ from peace.db import get_engine
 from peace.logs import configure_logging
 from peace.knowledge import build_graph, communities, export_graphify
 from peace.library import fetch_pending, mark_pages, remove_orphans
+from peace import archives, filelinks, improve, proposals, studyplan, updates
 from peace.topics import analyze_pending
 from peace import workload
 from peace.models import SyncRun
@@ -64,6 +65,8 @@ def tick(tz: ZoneInfo) -> None:
             log.info("sync %s already running; will check again", source)
     with Session(get_engine()) as session:
         worker_alive(session, datetime.now(UTC))
+        if done := proposals.auto_apply(session, datetime.now(UTC)):
+            log.info("applied %d proposals", len(done))
         if made := generate(session, datetime.now(UTC), tz):
             log.info("created %d notifications", made)
         session.commit()
@@ -119,14 +122,23 @@ def refresh_knowledge(session: Session, now: datetime) -> None:
         if fetched:
             log.info("analyzed %d course files", fetched)
             remove_orphans(session)
+        if fetched:
+            archives.expand_pending(session, now)
+            filelinks.mark_datasets(session)
+            filelinks.mark_duplicates(session)
+        filelinks.refresh_literal(session)
         if marked := mark_pages(session):
             log.info("added page marks to %d course files", marked)
         if read := analyze_pending(session, now):  # only while the desktop's model is reachable
             log.info("read topics of %d course files", read)
+        if studyplan.adapt_all(session, now):
+            session.commit()
+        updates.daily_check(session, now)
         if read := workload.analyze_pending(session, now):
             log.info("read %d project briefs or exam guides", read)
+        finished = improve.step(session, now)
         last = _last_export.get("at")
-        if fetched or last is None or now - last >= EXPORT_EVERY:
+        if fetched or finished or last is None or now - last >= EXPORT_EVERY:
             G = build_graph(session, now)
             export_graphify(G, communities(G))
             _last_export["at"] = now

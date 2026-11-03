@@ -34,12 +34,16 @@ from peace.auth import require_token
 from peace import sandbox
 from peace.db import get_engine, get_session
 from peace.exams import KIND_LABEL, profile
-from peace.llm import ask_json, current_model, llm_reachable, pause_reason
+from functools import partial
+from peace import llm
+from peace.llm import current_model, pause_reason
 from peace.mail_extract import containment, similarity
 from peace.mastery import HYPHENS, estimate, pt_pt, record_answer, weak_concepts
 from peace.models import (QUESTION_KINDS, Concept, ConceptAnswer, Course, ExamQuestion, Material, PracticeAnswer,
                           PracticeAttempt)
 from peace.routes import get_now
+ask_json = partial(llm.ask_json, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 log = logging.getLogger(__name__)
 PROMPT_VERSION = "gen-2"

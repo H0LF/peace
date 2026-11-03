@@ -355,7 +355,7 @@ def test_a_question_is_not_taken_from_an_earlier_request(client, session, monkey
     monkeypatch.setattr(assistant, "_llm", llm)
     client.post("/api/v1/assistant/ask", json={"text": "adiciona uma tarefa: relatório de RC"})
     r = client.post("/api/v1/assistant/ask", json={"text": "o que é o simplex?"}).json()
-    assert r["intent"] == "ask_material" and calls[-2:] == [3, 2]  # with the history, then without
+    assert r["intent"] == "ask_material" and calls[-1:] == [2]  # not a follow-up: no history at all
 
 
 def test_searching_my_notes_goes_to_the_pc(client):

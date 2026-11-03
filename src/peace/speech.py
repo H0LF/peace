@@ -6,6 +6,7 @@ These routes let a browser on any device talk to PEACE, and keep the speech serv
 
 import os
 import re
+import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -28,11 +29,29 @@ UNAVAILABLE = "A voz não está disponível neste servidor."
 STT_HINT = "Olá PEACE. Adiciona uma reunião. Marca uma consulta. Lembra-me de estudar. Cria uma tarefa. O que tenho hoje?"
 
 
-def _transcribe(audio: bytes) -> str:
+VOICES = [f"F{i}" for i in range(1, 6)]  # Supertonic's, as the desktop agent offers them; VoiceStudio's /health does not list them
+_engine: tuple[float, list[str]] = (0.0, [])
+ENGINE_CHECK_SECONDS = 30.0
+
+
+def engine_voices() -> list[str]:
+    """The voices of this server's speech service, [] when it is off. Settings polls: asked at most once in a while."""
+    global _engine
+    if time.monotonic() - _engine[0] > ENGINE_CHECK_SECONDS or not _engine[0]:
+        try:
+            r = httpx.get(VOICE_URL + "/health", timeout=1)
+            r.raise_for_status()
+            _engine = (time.monotonic(), r.json().get("voices") or VOICES)
+        except (httpx.HTTPError, ValueError, AttributeError):
+            _engine = (time.monotonic(), [])
+    return _engine[1]
+
+
+def _transcribe(audio: bytes, name: str) -> str:
     for url in dict.fromkeys((STT_URL, VOICE_URL)):
         try:
             r = httpx.post(url + "/v1/audio/transcriptions", timeout=60, files={"file": ("fala.wav", audio, "audio/wav")},
-                           data={"model": "whisper-1", "language": "pt", "prompt": STT_HINT})
+                           data={"model": "whisper-1", "language": "pt", "prompt": STT_HINT.replace("PEACE", name)})
             r.raise_for_status()
             return r.json().get("text", "").strip()
         except (httpx.HTTPError, ValueError):
@@ -40,14 +59,18 @@ def _transcribe(audio: bytes) -> str:
     raise HTTPException(503, UNAVAILABLE)
 
 
+def _assistant_name(session: Session) -> str:
+    return routes.get_appearance(session).assistant_name
+
+
 @router.post("/voice/hear")
-async def hear(request: Request):
+async def hear(request: Request, session: Session = Depends(get_session)):
     audio = bytearray()
     async for chunk in request.stream():
         audio += chunk
         if len(audio) > MAX_AUDIO:
             raise HTTPException(413, "Áudio demasiado longo")
-    return {"text": await run_in_threadpool(_transcribe, bytes(audio))}
+    return {"text": await run_in_threadpool(_transcribe, bytes(audio), await run_in_threadpool(_assistant_name, session))}
 
 
 def for_speech(text: str) -> str:
@@ -61,15 +84,16 @@ def for_speech(text: str) -> str:
 
 class SayIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    voice: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,40}$")  # hearing a voice in Settings, whatever is saved
 
 
 @router.post("/voice/say")
 def say(body: SayIn, session: Session = Depends(get_session)):
     prefs = routes.get_voice(session)
-    if not prefs.speak:
+    if not prefs.speak and not body.voice:
         return Response(status_code=204)
     # shortcut: always Portuguese; the agent's English voice translates through the model first. Share that if asked.
-    speech = {"model": TTS, "input": for_speech(body.text)[:2000], "voice": prefs.voice, "language": "pt", "response_format": "wav"}
+    speech = {"model": TTS, "input": for_speech(body.text)[:2000], "voice": body.voice or prefs.voice, "language": "pt", "response_format": "wav"}
     try:
         r = httpx.post(VOICE_URL + "/v1/audio/speech", json=speech, timeout=120)
         r.raise_for_status()

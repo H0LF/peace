@@ -155,7 +155,7 @@ export function Wallpaper({ seed, kind }: { seed: number; kind?: number }) {
   const r = useMemo(() => rng(seed + 1), [seed])
   const Picture = KINDS[(kind ?? seed) % KINDS.length]
   return (
-    <svg aria-hidden viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid slice" className="wp absolute inset-0 size-full" style={{ background: 'color-mix(in srgb, var(--accent) 7%, #05060a)' }}>
+    <svg aria-hidden viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid slice" className="wp absolute inset-0 size-full" style={{ background: 'var(--wp-bg)' }}>
       <Picture r={r} />
     </svg>
   )

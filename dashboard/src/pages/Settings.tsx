@@ -1,17 +1,20 @@
-import { ExternalLink, LogOut, Moon, Sun } from 'lucide-react'
+import { ArrowDown, ArrowUp, ExternalLink, GripVertical, LogOut, Moon, Plus, Sun, X } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useNavigate, useSearchParams } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 import { SOURCE_NAME, SyncButton, SyncHealthList } from '../components/sync'
 import Diagnostics from '../components/Diagnostics'
 import NotificationDiagnostics from '../components/NotificationDiagnostics'
-import { Button, Card, Checkbox, ErrorNote, Field, Input, PageHeader, Segmented, Select, Skeleton, cx, useToast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, ErrorNote, Field, Input, PageHeader, Segmented, Select, Skeleton, cx, useToast } from '../components/ui'
 import { DEFAULT_ACCENT, accentVariants, applyAccent, contrast, isHex, useTheme } from '../lib/theme'
-import { OrbMark } from '../components/Layout'
+import { DOCK_TOOLS, NAV, OrbMark, dockIds } from '../components/Layout'
 import { setVaultName } from '../components/materials'
 import { useHolo } from '../holo/HoloHands'
 import { PINCH_IN, PINCH_OUT } from '../holo/gestures'
-import { api, type Appearance, type IntegrationsForm as IntegrationsValues, type NotifyPrefs, type PhonePrefs, type PlanPrefs, type ReviewRules, type VoicePrefs } from '../lib/api'
-import { useApi, useNow } from '../lib/hooks'
+import { api, type AiShare, type ProviderModel, type UiPrefs, type UpdateInfo, type Appearance, type IntegrationsForm as IntegrationsValues, type NotifyPrefs, type PhonePrefs, type PlanPrefs, type ReviewRules, type VoicePrefs } from '../lib/api'
+import { reasonText } from '../components/ModelSelector'
+import { setAssistantName } from '../lib/i18n'
+import { featureOn, saveUi, useFeature, useUi, type Feature } from '../lib/ui'
+import { refreshAll, useApi, useNow } from '../lib/hooks'
 import { ago } from '../lib/format'
 
 const hhmm = (t: string) => t.slice(0, 5)
@@ -38,6 +41,7 @@ function VoiceForm() {
   const status = useApi(() => api.assistantStatus(), [], 15_000)
   const [form, setForm] = useState<VoicePrefs | null>(null)
   const [testing, setTesting] = useState(false)
+  const [playing, setPlaying] = useState(false)
   const test = useApi(() => api.voiceTestStatus(), [], testing ? 500 : 0)
   useEffect(() => {
     if (test.data?.state === 'done' || test.data?.state === 'error') setTesting(false)
@@ -64,6 +68,27 @@ function VoiceForm() {
     }
   }
 
+  /** No agent on this PC (a Mac, another device): the voice plays here, in the browser. */
+  async function listenHere(voice: string) {
+    setPlaying(true)
+    try {
+      const wav = await api.say('Olá, esta é a minha voz.', voice)
+      if (wav) {
+        const url = URL.createObjectURL(wav)
+        const audio = new Audio(url)
+        await new Promise<void>((done, failed) => {
+          audio.onended = () => done()
+          audio.onerror = () => failed(new Error('o browser não conseguiu tocar o áudio'))
+          audio.play().catch(failed)
+        }).finally(() => URL.revokeObjectURL(url))
+      }
+    } catch (err) {
+      toast(`Não foi possível ouvir: ${(err as Error).message}`, 'error')
+    } finally {
+      setPlaying(false)
+    }
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     try {
@@ -77,7 +102,7 @@ function VoiceForm() {
     <form onSubmit={submit} className="grid gap-4">
       <p className="text-[13px] text-muted">
         {connected
-          ? `Agente do PC ligado${status.data?.voice.available ? ` · ${status.data.voice.name}` : audio?.stt_available ? ' · serviço de fala ligado; ativação por voz indisponível' : ' · VoiceStudio indisponível'}.`
+          ? `Agente do PC ligado${status.data?.voice.available ? ` · ${status.data.voice.name}` : audio?.stt_available ? ' · serviço de fala ligado; ativação por voz indisponível' : ' · serviço de fala indisponível'}.`
           : 'O agente do PC está desligado: as alterações aplicam-se quando voltar.'}
       </p>
       {audio?.error && <p role="status" className="text-sm text-muted">{audio.error}</p>}
@@ -111,7 +136,7 @@ function VoiceForm() {
         </Field>
       </div>
       <Checkbox checked={form.speak} onChange={(speak) => setForm({ ...form, speak })} label="Responder em voz alta (senão, só por notificação)" />
-      <Field label="Voz" hint={voices.length ? undefined : 'A lista vem do PC quando o agente e o VoiceStudio estão ligados'}>
+      <Field label="Voz" hint={voices.length ? undefined : 'O serviço de fala está desligado neste computador. Docker: docker compose up -d voice'}>
         <Select aria-label="Voz" value={form.voice} disabled={!voices.length} onChange={(e) => setForm({ ...form, voice: e.target.value })} className="w-40">
           {voices.map((v) => (
             <option key={v} value={v}>{voiceName(v)}</option>
@@ -126,11 +151,11 @@ function VoiceForm() {
       </Field>
       {voices.length > 0 && (
         <div className="grid gap-1.5">
-          <p className="text-sm text-muted">Ouvir cada voz nas colunas do PC (não muda a escolha; uma de cada vez):</p>
+          <p className="text-sm text-muted">Ouvir cada voz (não muda a escolha; uma de cada vez):</p>
           <div className="flex flex-wrap gap-2">
             {voices.map((v) => (
               <Button key={v} size="sm" variant={form.voice === v ? 'primary' : 'secondary'} aria-label={`Ouvir a voz ${voiceName(v)}`}
-                disabled={!connected || testing || !audio?.playback_available} onClick={() => void testAudio('tts', v)}>
+                disabled={testing || playing} onClick={() => void (connected && audio?.playback_available ? testAudio('tts', v) : listenHere(v))}>
                 ▶ {voiceName(v)}
               </Button>
             ))}
@@ -295,43 +320,6 @@ function PhoneForm() {
 }
 
 /** The local model behind the assistant: automatic (the best installed) or one the student picks. */
-function ModelForm() {
-  const toast = useToast()
-  const models = useApi(() => api.models(), [], 30_000)
-  if (models.error) return <ErrorNote error={models.error} onRetry={models.reload} />
-  if (!models.data) return <Skeleton className="h-16" />
-  const { installed, using, chosen, preferred } = models.data
-  const best = preferred.find((m) => installed.includes(m))
-  async function choose(model: string) {
-    try {
-      await api.chooseModel(model)
-      models.reload()
-      toast('Modelo guardado', 'ok')
-    } catch (err) {
-      toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
-    }
-  }
-  return (
-    <div className="grid gap-3">
-      <p className="text-[13px] text-muted">
-        {using
-          ? `Em uso: ${using}.`
-          : installed.length
-            ? 'O modelo escolhido não está instalado no Ollama. Escolhe outro ou «Automático».'
-            : 'Sem modelo: o Ollama não está a correr ou não tem modelos. O assistente responde sem modelo (frases fixas).'}
-      </p>
-      <Field label="Modelo" hint="Automático usa o melhor modelo instalado que sabe escolher comandos">
-        <Select aria-label="Modelo do assistente" value={chosen} onChange={(e) => void choose(e.target.value)} className="sm:w-72">
-          <option value="">Automático{best ? ` (${best})` : ''}</option>
-          {installed.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </Select>
-      </Field>
-    </div>
-  )
-}
-
 const GOOGLE_RESULT: Record<string, [string, 'ok' | 'error']> = {
   ligado: ['Google Calendar ligado: a primeira sincronização começa dentro de momentos.', 'ok'],
   permissao: ['Para sincronizar, a Google tem de autorizar o acesso ao calendário. Tenta outra vez e aceita as permissões.', 'error'],
@@ -593,10 +581,11 @@ function AppearanceForm() {
   async function submit(e: FormEvent) {
     e.preventDefault()
     try {
-      await api.saveAppearance(form!)
+      const stored = await api.saveAppearance(form!)
       saved.current = form!.accent
       applyAccent(form!.accent)
       toast('Aparência guardada', 'ok')
+      setAssistantName(stored.assistant_name)
     } catch (err) {
       toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
     }
@@ -605,6 +594,9 @@ function AppearanceForm() {
     <form onSubmit={submit} className="grid gap-5">
       <Field label="O teu nome" hint="Para a saudação no Início">
         <Input value={form.name} maxLength={40} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ex.: Ana" className="sm:w-72" />
+      </Field>
+      <Field label="Nome do assistente" hint="Como lhe chamas ao falar ou escrever: «Jarvis, o que tenho amanhã?». Os ecrãs e as respostas passam a usar este nome.">
+        <Input required value={form.assistant_name} maxLength={30} pattern="[\p{L}\p{N}][\p{L}\p{N}' .\-]*" onChange={(e) => setForm({ ...form, assistant_name: e.target.value })} placeholder="Ex.: Jarvis" className="sm:w-72" />
       </Field>
       <fieldset className="grid gap-3">
         <legend className="mb-2 text-[13px] font-medium">Cor de destaque</legend>
@@ -741,7 +733,7 @@ const CATEGORIES: { key: keyof NotifyPrefs; label: string }[] = [
   { key: 'integrations', label: 'Problemas de sincronização' },
 ]
 
-const REVIEW_RULES: { key: keyof ReviewRules; label: string }[] = [
+const REVIEW_RULES: { key: Exclude<keyof ReviewRules, 'auto_apply'>; label: string }[] = [
   { key: 'deadline_earlier', label: 'Um prazo é antecipado' },
   { key: 'deadline_later', label: 'Um prazo é adiado' },
   { key: 'assessment_new', label: 'Aparece uma avaliação nova (até 30 dias)' },
@@ -786,6 +778,27 @@ function ReviewRulesForm() {
         </Button>
       </div>
     </form>
+  )
+}
+
+function AutoForm() {
+  const toast = useToast()
+  const rules = useApi(() => api.reviewRules(), [], 0)
+  const toggle = (auto_apply: boolean) =>
+    void api.saveReviewRules({ ...rules.data!, auto_apply }).then(rules.reload).catch((e: Error) => toast(e.message, 'error'))
+  return (
+    <Card title="Alterações automáticas">
+      {rules.error ? <ErrorNote error={rules.error} onRetry={rules.reload} /> : !rules.data ? <Skeleton className="h-16" /> : (
+        <div className="grid gap-3">
+          <label className="flex items-center gap-3 text-[13px]">
+            <Checkbox checked={rules.data.auto_apply} label="Deixar a PEACE fazer as mudanças sozinha" onChange={toggle} />
+            Deixar a PEACE fazer as mudanças sozinha
+          </label>
+          <p className="text-xs text-faint">Desliga para decidires tudo tu. Limpar emails e deixar trabalho de fora pedem sempre a tua decisão.</p>
+          <Link to="/rever" className="text-xs font-medium text-accent hover:underline">Ver o que a PEACE mudou</Link>
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -851,79 +864,599 @@ function NotificationsForm() {
   )
 }
 
+const TABS: { id: string; label: string }[] = [
+  { id: 'geral', label: 'Geral' },
+  { id: 'aparencia', label: 'Aparência' },
+  { id: 'funcionalidades', label: 'Funcionalidades' },
+  { id: 'ia', label: 'IA e modelos' },
+  { id: 'voz', label: 'Voz' },
+  { id: 'estudo', label: 'Estudo' },
+  { id: 'integracoes', label: 'Integrações' },
+  { id: 'notificacoes', label: 'Notificações' },
+  { id: 'privacidade', label: 'Privacidade e dados' },
+  { id: 'avancado', label: 'Avançado' },
+]
+
+function GeneralForm() {
+  const toast = useToast()
+  const { language } = useUi()
+  const change = (c: Partial<UiPrefs>) => saveUi(c).catch((e: Error) => toast(e.message, 'error'))
+  return (
+    <div className="grid gap-5">
+      <Field label="Idioma" hint="Os ecrãs e as respostas. A voz continua em português por agora.">
+        <Select aria-label="Idioma" value={language} onChange={(e) => void change({ language: e.target.value as UiPrefs['language'] })} className="sm:w-72">
+          <option value="pt">Português</option>
+          <option value="en">English</option>
+        </Select>
+      </Field>
+    </div>
+  )
+}
+
+function UpdatesForm() {
+  const toast = useToast()
+  const info = useApi(() => api.updates(), [], 30_000)
+  const [busy, setBusy] = useState(false)
+  if (info.error) return <ErrorNote error={info.error} onRetry={info.reload} />
+  if (!info.data) return <Skeleton className="h-16" />
+  const u = info.data
+  const installing = u.status === 'requested' || u.status === 'installing'
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true)
+    try {
+      await action()
+      info.reload()
+    } catch (e) {
+      toast((e as Error).message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="grid gap-4 text-[13px]">
+      <p>
+        Versão instalada: <span className="num font-medium">{u.version}</span>
+        {u.checked_at && <span className="text-faint"> · verificado {ago(u.checked_at, new Date())}</span>}
+      </p>
+      {!u.kind ? (
+        <p className="text-muted">Esta cópia da PEACE é gerida à mão, por isso não se atualiza sozinha.</p>
+      ) : (
+        <>
+          {u.check_error && <p className="text-warn">Não consegui ver se há novidades. Tento outra vez mais tarde.</p>}
+          {u.status === 'failed' && (
+            <p className="text-danger">A última atualização falhou e a versão anterior foi reposta, com os teus dados. {u.message === 'signature' ? 'A assinatura do ficheiro não era válida.' : ''}</p>
+          )}
+          {u.status === 'done' && !u.available && <p className="text-ok">Atualização concluída.</p>}
+          {u.available ? (
+            <div className="grid gap-2 rounded-lg border border-line bg-surface-2 p-3">
+              <p className="font-medium">Nova versão: <span className="num">{u.available.version}</span></p>
+              {u.available.notes && <p className="max-h-40 overflow-y-auto whitespace-pre-line text-xs text-muted">{u.available.notes}</p>}
+              <div>
+                <Button variant="primary" size="sm" disabled={busy || installing} onClick={() => void run(() => api.installUpdate())}>
+                  {installing ? 'A atualizar… (alguns minutos)' : 'Atualizar agora'}
+                </Button>
+              </div>
+              <p className="text-xs text-faint">Primeiro faz uma cópia de segurança. Os teus dados, chaves e definições mantêm-se, e se algo correr mal volta à versão atual.</p>
+            </div>
+          ) : (
+            !u.check_error && <p className="text-muted">Tens a versão mais recente.</p>
+          )}
+          <Field label="Atualizações">
+            <Select aria-label="Atualizações" value={u.policy} onChange={(e) => void run(() => api.saveUpdatePolicy(e.target.value as UpdateInfo['policy']))} className="sm:w-72">
+              <option value="notify">Avisar-me e eu decido</option>
+              <option value="auto">Instalar sozinha</option>
+              <option value="off">Não procurar</option>
+            </Select>
+          </Field>
+          <div>
+            <Button size="sm" disabled={busy} onClick={() => void run(() => api.checkUpdates())}>Procurar agora</Button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+const money = (price: number | null) => (price === null ? '' : price === 0 ? ' · grátis' : ` · $${price}/M`)
+
+/** A subscription has no key: the student types a code on the provider's own page, and PEACE waits for it to finish. */
+function ProviderLogin({ id, onDone }: { id: string; onDone: () => void }) {
+  const toast = useToast()
+  const [login, setLogin] = useState<{ url: string; code: string; interval: number }>()
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!login) return
+    const timer = window.setInterval(() => {
+      api.pollProviderLogin(id).then(
+        (r) => {
+          if (r.connected) {
+            setLogin(undefined)
+            onDone()
+          }
+        },
+        () => {
+          setLogin(undefined)
+          toast('O início de sessão expirou. Tenta outra vez.', 'error')
+        },
+      )
+    }, login.interval * 1000)
+    return () => window.clearInterval(timer)
+  }, [id, login, onDone, toast])
+  function start() {
+    setBusy(true)
+    api.startProviderLogin(id).then(setLogin, (e: Error) => toast(`Não consegui começar: ${reasonText(e.message)}`, 'error')).finally(() => setBusy(false))
+  }
+  if (!login) {
+    return (
+      <div className="grid gap-3">
+        <p className="text-[13px] text-muted">Usa os limites da tua subscrição, sem pagar por utilização. Não é uma API oficial da OpenAI, por isso pode deixar de funcionar.</p>
+        <div><Button disabled={busy} onClick={start}>Entrar com o ChatGPT</Button></div>
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-2 text-[13px]" aria-live="polite">
+      <p>Abre a página da OpenAI e escreve este código. A página fala em Codex: é normal, é esse o acesso da subscrição.</p>
+      <p className="num text-xl font-semibold tracking-widest">{login.code}</p>
+      <a href={login.url} target="_blank" rel="noreferrer noopener" className="inline-flex w-fit items-center gap-1 text-accent hover:underline">
+        Abrir a página da OpenAI <ExternalLink className="size-3" />
+      </a>
+      <p className="text-xs text-faint">À espera que termines lá…</p>
+    </div>
+  )
+}
+
+/** One form for every provider: choose where the AI runs, connect it if it needs a key, choose the model. */
+function AiForm() {
+  const toast = useToast()
+  const ai = useApi(() => api.ai(), [])
+  const [picked, setPicked] = useState<string>()
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [models, setModels] = useState<Record<string, ProviderModel[]>>({})
+  const data = ai.data
+  const providerId = picked ?? data?.active.provider ?? ''
+  const provider = data?.providers.find((p) => p.id === providerId)
+
+  useEffect(() => {
+    if (!provider?.connected || models[provider.id]) return
+    let live = true
+    api.providerModels(provider.id).then(
+      (rows) => live && setModels((m) => ({ ...m, [provider.id]: rows })),
+      (e: Error) => live && toast(`Não consegui obter os modelos: ${reasonText(e.message)}`, 'error'),
+    )
+    return () => {
+      live = false
+    }
+  }, [provider?.id, provider?.connected, models, toast])
+
+  if (ai.error) return <Card title="IA e modelos"><ErrorNote error={ai.error} onRetry={ai.reload} /></Card>
+  if (!data) return <Skeleton className="h-40" />
+  const { active, choices } = data
+  const saved = choices.filter((c) => c.provider === providerId)
+  const here = active.provider === providerId
+  const offered = provider ? [...saved.map((c) => ({ id: c.model, price: c.price })), ...(models[provider.id] ?? []).filter((m) => !saved.some((c) => c.model === m.id))] : []
+  const changed = () => {
+    ai.reload()
+    refreshAll() // the home page's selector and anything else showing the model
+  }
+
+  async function run(action: () => Promise<unknown>, done: string, failed: string) {
+    setBusy(true)
+    try {
+      await action()
+      toast(done, 'ok')
+      changed()
+    } catch (e) {
+      toast(`${failed}: ${reasonText((e as Error).message)}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const connect = (e: FormEvent) => {
+    e.preventDefault()
+    const id = provider!.id
+    void run(() => api.saveProviderKey(id, key).then(() => setKey('')), `${provider!.name} ligado`, 'Não consegui ligar') // the key leaves the browser as soon as PEACE has it
+  }
+  const remove = () => {
+    const id = provider!.id
+    void run(() => api.removeProviderKey(id).then(() => setModels((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)))), 'Chave removida', 'Não consegui remover')
+  }
+  const pickModel = (model: string) => void run(() => api.setActiveModel(providerId, model), `Agora: ${model || 'Automático'}`, 'Não consegui mudar')
+  const best = choices.find((c) => !c.provider)?.model
+
+  return (
+    <Card
+      title="IA e modelos"
+      action={provider ? (provider.connected ? <Badge tone={provider.error ? 'warn' : 'ok'}>{provider.error ? reasonText(provider.error) : 'Ligado'}</Badge> : <Badge>Não ligado</Badge>) : <Badge tone="ok">Gratuito e privado</Badge>}
+    >
+      <div className="grid gap-4">
+        <Field label="Onde corre a IA">
+          <Select
+            aria-label="Fornecedor"
+            value={providerId}
+            onChange={(e) => {
+              setPicked(e.target.value)
+              setKey('')
+            }}
+            className="sm:w-96"
+          >
+            <option value="">Neste PC (Ollama)</option>
+            {data.providers.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </Select>
+        </Field>
+
+        {provider?.login && !provider.connected && <ProviderLogin key={provider.id} id={provider.id} onDone={changed} />}
+        {provider && !provider.login && !provider.connected && (
+          <form onSubmit={connect} className="grid gap-3">
+            <Field label="Chave de API" hint="A PEACE confirma a chave com o fornecedor antes de a guardar, e nunca a mostra de volta.">
+              <Input type="password" autoComplete="off" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} className="sm:w-96" />
+            </Field>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="submit" disabled={busy || !key.trim()}>{busy ? 'A confirmar…' : 'Ligar'}</Button>
+              <a href={provider.keys_url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
+                Obter uma chave <ExternalLink className="size-3" />
+              </a>
+            </div>
+          </form>
+        )}
+
+        {!provider && (
+          <Field label="Modelo" hint="Automático usa o melhor modelo instalado que sabe escolher comandos">
+            <Select aria-label="Modelo" disabled={busy} value={here && !data.automatic ? active.model : ''} onChange={(e) => pickModel(e.target.value)} className="sm:w-96">
+              <option value="">Automático{best ? ` (${best})` : ''}</option>
+              {saved.map((c) => (
+                <option key={c.model} value={c.model}>{c.model}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {!provider && !saved.length && <p className="text-[13px] text-muted">Sem modelo: o Ollama não está a correr ou não tem modelos. O assistente responde sem modelo (frases fixas).</p>}
+
+        {provider?.connected && (
+          <>
+            <Field label="Modelo" hint={provider.login ? 'Todos aparecem também no Início. Usam os limites da tua subscrição.' : 'Só aparecem modelos capazes de usar os comandos da PEACE. O preço é por milhão de tokens de entrada.'}>
+              <Select aria-label="Modelo" disabled={busy || !offered.length} value={here ? active.model : ''} onChange={(e) => e.target.value && pickModel(e.target.value)} className="sm:w-96">
+                <option value="">{offered.length ? 'Escolhe…' : 'A obter…'}</option>
+                {offered.map((m) => (
+                  <option key={m.id} value={m.id}>{m.id}{money(m.price)}</option>
+                ))}
+              </Select>
+            </Field>
+            {saved.length > 1 && !provider.login && (
+              <ul aria-label="Modelos na lista do Início" className="flex flex-wrap gap-2 text-xs">
+                {saved.filter((c) => !(here && c.model === active.model)).map((c) => (
+                  <li key={c.model} className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1">
+                    {c.model}
+                    <button type="button" aria-label={`Tirar ${c.model} da lista`} onClick={() => api.removeFavourite(provider.id, c.model).then(changed, (e: Error) => toast(e.message, 'error'))} className="text-muted hover:text-text">
+                      <X className="size-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={remove}>{provider.login ? 'Terminar sessão' : 'Remover a chave'}</Button>
+            </div>
+          </>
+        )}
+
+        <div className="grid gap-1 border-t border-line pt-3 text-xs text-faint">
+          <p>Em uso: <span className="text-muted">{active.model || 'nenhum modelo'}</span>. Muda-se também no Início, ou a falar.</p>
+          {provider && !provider.login && <p>Pagas ao fornecedor por utilização. Uma subscrição do ChatGPT Plus ou Pro não inclui crédito de API: para a usares, escolhe Subscrição ChatGPT.</p>}
+          {provider && <p>Decides o que pode sair deste PC em <Link to="/definicoes?separador=privacidade" className="text-accent hover:underline">Privacidade e dados</Link>.</p>}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+const FEATURES: { key: Feature; label: string; hint: string }[] = [
+  { key: 'holo', label: 'Holo Hands', hint: 'Controlar a PEACE com as mãos, pela câmara.' },
+  { key: 'mic', label: 'Microfone no Início', hint: 'Falar com a PEACE no browser.' },
+  { key: 'timer', label: 'Cronómetro', hint: 'Medir o tempo de estudo na página Estudo.' },
+  { key: 'practice', label: 'Treino', hint: 'Perguntas de treino em cada cadeira.' },
+  { key: 'mastery', label: 'Conceitos e exames antigos', hint: 'O que dominas e os exames passados, em cada cadeira.' },
+  { key: 'graph', label: 'Graphify', hint: 'O grafo de conhecimento em 3D.' },
+  { key: 'mail', label: 'Correio', hint: 'Ler o email da universidade na PEACE.' },
+]
+
+function FeaturesForm() {
+  const toast = useToast()
+  const ui = useUi()
+  return (
+    <Card title="Funcionalidades">
+      <p className="mb-4 text-[13px] text-muted">Desligar só tira de vista: os teus dados ficam, e voltam quando ligares outra vez.</p>
+      <div className="grid gap-3">
+        {FEATURES.map((f) => (
+          <div key={f.key} className="flex items-start gap-3">
+            <Checkbox checked={featureOn(ui, f.key)} onChange={(on) => void saveUi({ features: { ...ui.features, [f.key]: on } }).catch((e: Error) => toast(e.message, 'error'))} label={f.label} />
+            <div>
+              <div className="text-[13px] font-medium">{f.label}</div>
+              <div className="text-xs text-faint">{f.hint}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+function DockForm() {
+  const toast = useToast()
+  const ui = useUi()
+  const [dragged, setDragged] = useState<string>()
+  const shown = dockIds(ui)
+  const every = [
+    ...NAV.filter((n) => !n.feature || featureOn(ui, n.feature)).map((n) => ({ id: n.to, label: n.label, icon: n.icon })),
+    ...DOCK_TOOLS.filter((t) => !t.feature || featureOn(ui, t.feature)),
+  ]
+  // Rever needs no place on the bar: its link is in Automatic changes, and it opens by itself when a decision waits.
+  const hidden = every.filter((i) => !shown.includes(i.id) && i.id !== '/rever')
+  const item = (id: string) => every.find((i) => i.id === id)!
+  const save = (dock: string[] | null) => void saveUi({ dock }).catch((e: Error) => toast(e.message, 'error'))
+  const move = (id: string, to: number) => {
+    const rest = shown.filter((x) => x !== id)
+    save([...rest.slice(0, to), id, ...rest.slice(to)])
+  }
+  // Settings must stay reachable: this page or the list of all pages stays on the bar.
+  const lastWay = (id: string) => ['/definicoes', 'tool:all'].includes(id) && !shown.some((x) => x !== id && ['/definicoes', 'tool:all'].includes(x))
+
+  return (
+    <Card title="Barra inferior" action={ui.dock && <Button size="sm" variant="ghost" onClick={() => save(null)}>Repor</Button>}>
+      <p className="mb-3 text-[13px] text-muted">Escolhe o que aparece na barra e por que ordem: arrasta, ou usa as setas. Só aparece em ecrãs largos; em ecrãs pequenos, tudo está no menu.</p>
+      <ul aria-label="Na barra" className="grid gap-1">
+        {shown.map((id, i) => {
+          const { label, icon: Icon } = item(id)
+          const pinned = id === 'tool:sync'
+          return (
+            <li
+              key={id}
+              draggable={!pinned}
+              title={pinned ? 'Fica sempre à direita' : undefined}
+              onDragStart={() => setDragged(id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => dragged && dragged !== id && move(dragged, i)}
+              className="flex cursor-grab items-center gap-2 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[13px]"
+            >
+              <GripVertical aria-hidden className="size-3.5 shrink-0 text-faint" />
+              <Icon aria-hidden className="size-4 shrink-0 text-muted" />
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+              <Button size="icon" variant="ghost" aria-label={`Subir ${label}`} disabled={i === 0 || pinned} onClick={() => move(id, i - 1)}><ArrowUp className="size-3.5" /></Button>
+              <Button size="icon" variant="ghost" aria-label={`Descer ${label}`} disabled={i === shown.length - 1 || shown[i + 1] === 'tool:sync'} onClick={() => move(id, i + 1)}><ArrowDown className="size-3.5" /></Button>
+              <Button size="icon" variant="ghost" aria-label={`Tirar ${label} da barra`} title={lastWay(id) ? 'Tem de ficar um caminho para as definições' : undefined} disabled={lastWay(id)} onClick={() => save(shown.filter((x) => x !== id))}><X className="size-3.5" /></Button>
+            </li>
+          )
+        })}
+      </ul>
+      {hidden.length > 0 && (
+        <>
+          <h3 className="mt-4 mb-1 text-[11px] font-semibold tracking-wide text-faint uppercase">Fora da barra</h3>
+          <ul aria-label="Fora da barra" className="flex flex-wrap gap-2">
+            {hidden.map(({ id, label, icon: Icon }) => (
+              <li key={id}>
+                <button type="button" aria-label={`Pôr ${label} na barra`} onClick={() => save([...shown, id])} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs text-muted hover:border-accent/50 hover:text-text">
+                  <Plus aria-hidden className="size-3" /> <Icon aria-hidden className="size-3.5" /> {label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Card>
+  )
+}
+
+const SHARE: { key: keyof AiShare; label: string; hint: string }[] = [
+  { key: 'chat', label: 'Conversa', hint: 'O que escreves ou dizes à PEACE e, quando a pergunta precisar, os dados para lhe responder, como o horário, os prazos e as tarefas. O email só com a opção Email.' },
+  { key: 'documents', label: 'Documentos que pedes', hint: 'Excertos de materiais quando pedes um resumo, um plano de estudo ou um exercício.' },
+  { key: 'background', label: 'Leitura automática', hint: 'A PEACE lê todos os ficheiros das cadeiras sozinha. Pode gastar bastante crédito.' },
+  { key: 'mail', label: 'Email', hint: 'O conteúdo dos teus emails, para encontrar datas e prazos.' },
+]
+
+function PrivacyTab() {
+  const toast = useToast()
+  const ai = useApi(() => api.ai(), [])
+  async function toggle(key: keyof AiShare, on: boolean) {
+    try {
+      await api.saveShare({ ...ai.data!.share, [key]: on })
+      ai.reload()
+    } catch (e) {
+      toast((e as Error).message, 'error')
+    }
+  }
+  if (ai.error) return <ErrorNote error={ai.error} onRetry={ai.reload} />
+  if (!ai.data) return <Skeleton className="h-40" />
+  const connected = ai.data.providers.filter((p) => p.connected)
+  return (
+    <>
+      <Card title="O que pode sair deste PC">
+        <p className="mb-4 text-[13px] text-muted">
+          Só conta quando estás a usar um modelo na nuvem. Com um modelo neste PC, nada sai. O que desligares aqui usa o modelo deste PC; se não houver nenhum, essa função fica parada. Imagens de exames ficam sempre neste PC.
+        </p>
+        <div className="grid gap-3">
+          {SHARE.map((o) => (
+            <div key={o.key} className="flex items-start gap-3">
+              <Checkbox checked={ai.data!.share[o.key]} onChange={(on) => void toggle(o.key, on)} label={o.label} />
+              <div>
+                <div className="text-[13px] font-medium">{o.label}</div>
+                <div className="text-xs text-faint">{o.hint}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card title="Chaves guardadas">
+        <p className="text-[13px] text-muted">
+          {ai.data.key_storage === 'keychain' ? 'Ficam no porta-chaves do sistema operativo.' : 'Ficam num ficheiro encriptado neste PC, fora das cópias de segurança da base de dados.'}{' '}
+          {connected.length ? `Ligados: ${connected.map((p) => p.name).join(', ')}.` : 'Nenhum fornecedor ligado.'}
+        </p>
+      </Card>
+      <Card title="Os teus dados">
+        <p className="mb-3 text-[13px] text-muted">Tudo fica neste PC. Descarrega uma cópia legível do que a PEACE guarda, ou apaga o histórico de conversa.</p>
+        <div className="flex flex-wrap gap-2">
+          <a href="/api/v1/data/export" download className="inline-flex h-9 items-center rounded-lg border border-line bg-surface-2 px-3.5 text-sm font-medium hover:bg-surface-3">Descarregar os meus dados</a>
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              if (!window.confirm('Apagar todo o histórico de conversa com a PEACE? Não dá para desfazer.')) return
+              try {
+                await api.clearConversation()
+                toast('Histórico de conversa apagado', 'ok')
+              } catch (e) {
+                toast((e as Error).message, 'error')
+              }
+            }}
+          >
+            Apagar o histórico de conversa
+          </Button>
+        </div>
+      </Card>
+    </>
+  )
+}
+
 export default function Settings() {
   const now = useNow(60_000)
   const navigate = useNavigate()
   const health = useApi(() => api.syncStatus(), [])
   const [theme, setTheme] = useTheme()
+  const holoOn = useFeature('holo')
+  const [params, setParams] = useSearchParams()
+
+  // Google sends the student back here with ?google=...: that result is shown in its own tab, even once the form clears it.
+  const [landing] = useState(params.has('google') ? 'integracoes' : 'geral')
+  const wanted = params.get('separador') ?? landing
+  const tab = TABS.some((t) => t.id === wanted) ? wanted : 'geral'
+  const choose = (id: string) => setParams({ separador: id }, { replace: true })
 
   return (
-    <div className="grid max-w-4xl gap-6">
+    <div className="mx-auto grid max-w-4xl gap-6">
       <PageHeader title="Definições" />
-      <Card title="Integrações" action={<SyncButton size="sm" />}>
-        {health.data ? <SyncHealthList health={health.data} now={now} /> : <Skeleton className="h-16" />}
-        <p className="mt-4 text-xs text-faint">
-          Sincronização automática todos os dias às 02:00 (Europe/Lisbon). As credenciais ficam só neste PC, na base de dados da PEACE; nunca são mostradas de volta.
-        </p>
-        <div className="mt-6 border-t border-line pt-5" />
-        <IntegrationsForm onSaved={health.reload} />
-      </Card>
-      <Card title="Plano de estudo">
-        <PlannerForm />
-      </Card>
-      <Card title="Notificações">
-        <NotificationsForm />
-        <NotificationDiagnostics />
-      </Card>
-      <Card title="Rever">
-        <ReviewRulesForm />
-      </Card>
-      <Card title="Telemóvel">
-        <PhoneForm />
-      </Card>
-      <Card title="Google Calendar">
-        <GoogleCalendarForm />
-      </Card>
-      <Card title="Holo Hands">
-        <HoloTuning />
-      </Card>
-      <Card title="Obsidian">
-        <ObsidianForm />
-      </Card>
-      <Card title="Assistente">
-        <ModelForm />
-      </Card>
-      <Card title="Voz">
-        <VoiceForm />
-      </Card>
-      <Card title="Aparência">
-        <AppearanceForm />
-        <div className="mt-6 border-t border-line pt-5" />
-        <Segmented
-          label="Tema"
-          value={theme}
-          onChange={setTheme}
-          options={[
-            { value: 'dark', label: 'Escuro' },
-            { value: 'light', label: 'Claro' },
-          ]}
-        />
-        <span className="ml-3 inline-flex align-middle text-faint">{theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}</span>
-      </Card>
-      <Card title="Diagnóstico">
-        <Diagnostics />
-      </Card>
-      <Card title="Sessão">
-        <GoogleAccount />
-        <Button
-          onClick={async () => {
-            await api.logout()
-            navigate('/entrar', { replace: true })
-          }}
-        >
-          <LogOut className="size-4" /> Terminar sessão
-        </Button>
-      </Card>
+      <div role="tablist" aria-label="Secções das definições" className="-mt-2 flex flex-wrap gap-1 border-b border-line pb-px">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            id={`tab-${t.id}`}
+            aria-selected={t.id === tab}
+            aria-controls="settings-panel"
+            onClick={() => choose(t.id)}
+            className={cx('h-9 shrink-0 rounded-t-lg border-b-2 px-3 text-[13px] font-medium whitespace-nowrap transition-colors', t.id === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text')}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div id="settings-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="grid gap-6">
+        {tab === 'geral' && (
+          <>
+            <Card title="Geral">
+              <GeneralForm />
+            </Card>
+            <Card title="Atualizações">
+              <UpdatesForm />
+            </Card>
+            <Card title="Sessão">
+              <GoogleAccount />
+              <Button
+                onClick={async () => {
+                  await api.logout()
+                  navigate('/entrar', { replace: true })
+                }}
+              >
+                <LogOut className="size-4" /> Terminar sessão
+              </Button>
+            </Card>
+          </>
+        )}
+        {tab === 'aparencia' && (
+          <Card title="Aparência">
+            <AppearanceForm />
+            <div className="mt-6 border-t border-line pt-5" />
+            <Segmented
+              label="Tema"
+              value={theme}
+              onChange={setTheme}
+              options={[
+                { value: 'dark', label: 'Escuro' },
+                { value: 'light', label: 'Claro' },
+              ]}
+            />
+            <span className="ml-3 inline-flex align-middle text-faint">{theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}</span>
+          </Card>
+        )}
+        {tab === 'funcionalidades' && (
+          <>
+            <AutoForm />
+            <FeaturesForm />
+            <DockForm />
+          </>
+        )}
+        {tab === 'ia' && (
+          <>
+            <AiForm />
+          </>
+        )}
+        {tab === 'voz' && (
+          <Card title="Voz">
+            <VoiceForm />
+          </Card>
+        )}
+        {tab === 'estudo' && (
+          <Card title="Plano de estudo">
+            <PlannerForm />
+          </Card>
+        )}
+        {tab === 'integracoes' && (
+          <>
+            <Card title="Moodle e Inforestudante" action={<SyncButton size="sm" />}>
+              {health.data ? <SyncHealthList health={health.data} now={now} /> : <Skeleton className="h-16" />}
+              <p className="mt-4 text-xs text-faint">
+                Sincronização automática todos os dias às 02:00 (Europe/Lisbon). As credenciais ficam só neste PC, na base de dados da PEACE; nunca são mostradas de volta.
+              </p>
+              <div className="mt-6 border-t border-line pt-5" />
+              <IntegrationsForm onSaved={health.reload} />
+            </Card>
+            <Card title="Google Calendar">
+              <GoogleCalendarForm />
+            </Card>
+            <Card title="Obsidian">
+              <ObsidianForm />
+            </Card>
+          </>
+        )}
+        {tab === 'notificacoes' && (
+          <>
+            <Card title="Notificações">
+              <NotificationsForm />
+            </Card>
+            <Card title="Telemóvel">
+              <PhoneForm />
+            </Card>
+          </>
+        )}
+        {tab === 'privacidade' && <PrivacyTab />}
+        {tab === 'avancado' && (
+          <>
+            <Card title="Rever">
+              <ReviewRulesForm />
+            </Card>
+            {holoOn && (
+              <Card title="Holo Hands">
+                <HoloTuning />
+              </Card>
+            )}
+            <Card title="Diagnóstico">
+              <Diagnostics />
+            </Card>
+            <NotificationDiagnostics />
+          </>
+        )}
+      </div>
     </div>
   )
 }

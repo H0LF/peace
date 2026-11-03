@@ -518,7 +518,7 @@ STT_HINT = "Olá PEACE. Adiciona uma reunião. Marca uma consulta. Lembra-me de 
 
 def transcribe(wav: Path) -> str:
     """Speech to text on the GPU server; if it is down or out of memory, VoiceStudio's Whisper on the CPU (~3 s)."""
-    body, kind = multipart({"model": "whisper-1", "language": "pt", "prompt": STT_HINT}, "file", "fala.wav", wav.read_bytes())
+    body, kind = multipart({"model": "whisper-1", "language": "pt", "prompt": STT_HINT.replace("PEACE", settings.get("assistant_name", "PEACE"))}, "file", "fala.wav", wav.read_bytes())
     engines = list(dict.fromkeys((STT_URL, VOICESTUDIO)))
     for url in engines:
         request = urllib.request.Request(url + "/v1/audio/transcriptions", data=body, method="POST", headers={"Content-Type": kind})
@@ -1032,6 +1032,7 @@ def main() -> None:
                 next_beat = time.monotonic() + POLL_SECONDS
                 try:  # voice must never stop notifications
                     apply_voice_settings(call("GET", "/api/v1/preferences/voice") or {})
+                    settings["assistant_name"] = (call("GET", "/api/v1/preferences/appearance") or {}).get("assistant_name") or "PEACE"
                     # The server's model, so translation and warm-up never load a second one.
                     settings["model"] = (call("GET", "/api/v1/assistant/models") or {}).get("using") or settings["model"]
                     call("POST", "/api/v1/desktop/heartbeat", {"capabilities": capabilities()})

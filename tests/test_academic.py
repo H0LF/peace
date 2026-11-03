@@ -24,7 +24,7 @@ def test_context_includes_synced_assessments_and_completed_prep():
                  starts_at=NOW + timedelta(hours=20), ends_at=NOW + timedelta(hours=22))
     done = StudySession(event_id=1, starts_at=NOW - timedelta(hours=1), ends_at=NOW, status='done')
     db = Mock()
-    db.scalars.side_effect = [[], [exam], [done], []]
+    db.scalars.side_effect = [[], [exam], [], [done], []]  # tasks, exams, exams with a plan, done sessions, guides
     target, = academic.targets(db, NOW, PlanPrefs())
     assert target.event_id == 1 and target.estimated_minutes == 60
 

@@ -21,6 +21,7 @@ import networkx as nx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from peace import filelinks
 from peace.library import data_dir, term_frequencies
 from peace.models import OPEN_STATUSES, Course, Event, Material, Task
 
@@ -75,7 +76,7 @@ class Index:
 
 
 def load_index(session: Session) -> Index:
-    return Index(list(session.scalars(select(Material).where(Material.kind == "file", Material.terms.is_not(None)))))
+    return Index(list(session.scalars(select(Material).where(Material.kind == "file", Material.terms.is_not(None), Material.duplicate_of_id.is_(None)))))
 
 
 # What a study session is for, from the task: preparing an exam, doing an assignment, or plain study.
@@ -190,6 +191,8 @@ def build_graph(session: Session, now: datetime, concepts_per_file: int = 8, max
     tops = {i: index.top_terms(i, concepts_per_file) for i in index.materials}
     df = Counter(t for terms in tops.values() for t in terms)
     concepts = {t for t, c in df.most_common(max_concepts) if c >= 2}
+    # The themes the model read in the files say more than frequent words; again, only those shared by two files or more.
+    themes = Counter(t.strip().lower() for m in index.materials.values() if m.doc_kind != "admin" for t in {x.strip() for x in m.topics or []})
 
     for i, m in index.materials.items():
         node = f"material:{i}"
@@ -202,6 +205,16 @@ def build_graph(session: Session, now: datetime, concepts_per_file: int = 8, max
                 G.add_node(f"concept:{t}", label=t, file_type="concept", kind="concept", course_id=None, source_file="")
                 G.add_edge(node, f"concept:{t}", relation="mentions", confidence="EXTRACTED",
                            weight=round(index.vectors[i][t], 3))
+        for t in {x.strip() for x in m.topics or []} if m.doc_kind != "admin" else ():
+            if themes[t.lower()] >= 2:
+                G.add_node(f"concept:{t.lower()}", label=t, file_type="concept", kind="concept", course_id=None, source_file="")
+                G.add_edge(node, f"concept:{t.lower()}", relation="mentions", confidence="INFERRED", weight=1.0)
+        # What this file itself says it needs, and what is inside it.
+        for ref in filelinks.to_open(m):
+            if ref.get("material_id") in index.materials:
+                G.add_edge(node, f"material:{ref['material_id']}", relation="needs", confidence="EXTRACTED", weight=1.0, why=ref.get("why") or ref["name"])
+        if m.parent_id in index.materials:
+            G.add_edge(f"material:{m.parent_id}", node, relation="contains", confidence="EXTRACTED", weight=1.0)
         # Two most similar files elsewhere (inferred).
         for other, score, terms in index.rank(index.vectors[i], None, 3):
             if other.id != i and score >= 0.25:

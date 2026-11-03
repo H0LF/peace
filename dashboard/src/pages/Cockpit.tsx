@@ -1,3 +1,5 @@
+import { ModelSelector } from '../components/ModelSelector'
+import { useFeature } from '../lib/ui'
 import {
   ArrowRight,
   ArrowUp,
@@ -12,7 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import { useRef, useState, type FormEvent } from 'react'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import type { OrbState } from '../components/Orb'
 import { obsidianHref, onThisPc, safeHttp } from '../components/materials'
 import { Deck } from '../components/deck'
@@ -98,16 +100,7 @@ function TopBar({ status, now, onFocusOff, onAll, name }: { status?: AssistantSt
           Foco até {time(status.focus.until)} <X aria-hidden className="size-3" />
         </button>
       )}
-      {status && (
-        <span
-          title={status.model.reachable ? 'Modelo local ligado (no teu PC)' : status.model.paused ? `Em pausa: ${status.model.paused}. Volta sozinho quando houver memória.` : 'Modelo offline: a PEACE usa os comandos internos'}
-          className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-surface/60 px-3.5 text-xs"
-        >
-          <span className={cx('size-2 rounded-full', status.model.reachable ? 'bg-accent shadow-[0_0_6px_var(--glow)]' : 'bg-line-strong')} />
-          {status.model.name}
-          {!status.model.reachable && <span className="text-faint">{status.model.paused === 'a carregar o modelo' ? 'a carregar…' : status.model.paused ? 'em pausa' : 'offline'}</span>}
-        </span>
-      )}
+      <ModelSelector paused={status?.model.paused} />
       <button
         type="button"
         aria-label={theme === 'dark' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
@@ -126,8 +119,11 @@ function TopBar({ status, now, onFocusOff, onAll, name }: { status?: AssistantSt
 export default function Cockpit() {
   const now = useNow(15_000)
   const toast = useToast()
+  const mic = useFeature('mic')
+  const navigate = useNavigate()
   const today = useApi(() => api.today(), [])
   const work = useApi(() => api.workload(), [], 120_000)
+  const waiting = useApi(() => api.proposals(), [], 120_000)
   const status = useApi(() => api.assistantStatus(), [], 2_000)
   const appearance = useApi(() => api.appearance(), [], 0)
   const [text, setText] = useState('')
@@ -172,7 +168,8 @@ export default function Cockpit() {
     try {
       const r = await api.ask(q, source)
       setReply({ ...r, question: q })
-      if (['plan_day', 'plan_week', 'skip_session', 'postpone_session', 'focus', 'focus_off'].includes(r.intent)) refreshAll()
+      if (['plan_day', 'plan_week', 'skip_session', 'postpone_session', 'focus', 'focus_off', 'model', 'study_plan'].includes(r.intent)) refreshAll()
+      if (r.intent === 'open_document' && r.to) navigate(r.to)
       if (source === 'voice') void speak(r.reply)
     } catch (e) {
       setText(q) // keep the question so it can be sent again
@@ -224,7 +221,7 @@ export default function Cockpit() {
           maxLength={500}
           className="min-w-0 flex-1 bg-transparent py-2 text-[15px] placeholder:text-faint focus:outline-none"
         />
-        <button
+        {mic && <button
           type="button"
           aria-label={listening ? 'Parar e enviar' : 'Falar'}
           aria-pressed={listening}
@@ -234,7 +231,7 @@ export default function Cockpit() {
           className={cx('grid size-10 shrink-0 place-items-center rounded-full border transition disabled:opacity-40', listening ? 'border-accent bg-accent-soft text-accent' : 'border-line bg-surface-2 text-muted hover:text-accent')}
         >
           {listening ? <Square className="size-4" /> : <Mic className="size-4" />}
-        </button>
+        </button>}
         <button type="submit" aria-label="Enviar" disabled={!text.trim() || busy} className="grid size-10 shrink-0 place-items-center rounded-full border border-line bg-surface-2 text-muted transition hover:text-accent disabled:opacity-40">
           <ArrowUp className="size-4" />
         </button>
@@ -250,10 +247,15 @@ export default function Cockpit() {
   )
 
   return (
-    <div className="cockpit relative isolate flex min-h-dvh flex-col gap-3 p-4 sm:px-6 sm:py-4 lg:h-dvh lg:pb-24">
+    <div className="cockpit relative isolate flex min-h-dvh flex-col gap-3 overflow-x-clip p-4 sm:px-6 sm:py-4 lg:h-dvh lg:overflow-clip lg:pb-24">
       <TopBar status={status.data} now={now} onFocusOff={status.reload} onAll={() => setAll(true)} name={appearance.data?.name} />
       {today.error && <p className="glass px-5 py-3 text-[13px] text-danger">Não consegui carregar o dia: {today.error.message}</p>}
       {work.error && <p className="glass px-5 py-3 text-[13px] text-danger">Não consegui carregar as entregas: {work.error.message}</p>}
+      {!!waiting.data?.length && (
+        <Link to="/rever" className="glass relative z-20 flex items-center justify-center gap-1 px-5 py-2 text-[13px] text-accent hover:underline">
+          A PEACE precisa de uma decisão tua <ArrowRight className="size-3" />
+        </Link>
+      )}
       <Deck t={t} work={work.data} now={now} state={state} />
       <div className="relative z-20 flex flex-col items-center gap-2">
         <div aria-live="polite" className="w-full max-w-2xl">

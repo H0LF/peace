@@ -13,6 +13,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     // A fake camera (moving test pattern) so Holo Hands can really start: camera, model, tracking loop.
     launchOptions: {
+      ignoreDefaultArgs: ['--hide-scrollbars'], // real scrollbars: they take up width, as on Windows
       args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--host-resolver-rules=MAP peace.test 127.0.0.1'],
       ...(process.env.PEACE_CHROMIUM ? { executablePath: process.env.PEACE_CHROMIUM } : {}),
     },

@@ -1,4 +1,5 @@
-"""Proposals (ADR-020): changes PEACE suggests, applied only when the student says so. Deterministic, no LLM.
+"""Proposals (ADR-020, ADR-029): changes PEACE works out, applied on its own unless the student turned that off.
+Deterministic, no LLM.
 
 `replan` (phase 1): when a deadline or an assessment appears or moves, drop that item's future sessions that no
 longer fit and plan it again up to its date, around every other commitment.
@@ -10,6 +11,7 @@ applying does.
 """
 
 import imaplib
+import logging
 from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -24,18 +26,23 @@ from peace.auth import require_token
 from peace.config import get_settings
 from peace.db import get_session
 from peace.models import PLANNABLE_STATUSES, AuditEvent, Change, Event, MailMessage, Preference, Proposal, StudySession, Task
-from peace.notifications import _when, planner_prefs
+from peace.notifications import _add, _when, planner_prefs
 from peace.routes import get_now
 
 HORIZON = timedelta(days=30)  # the planner only prepares assessments this far ahead
 PLAN_DAYS = 14  # a re-plan fills at most two weeks, like "planeia a semana" twice
 MAIL_FACTS = ("mail_date", "mail_new")  # phase 4b: a date taken from a university email
+# Never automatic: one moves mail in the real mailbox, the other leaves the student's work out of the plan.
+ASK_FIRST = ("mail_cleanup", "recover_drop")
+
+log = logging.getLogger(__name__)
 
 
 class ReviewRules(BaseModel):
     """Which detected changes become a Proposal to re-plan (Definições → Rever)."""
 
     model_config = ConfigDict(extra="forbid")
+    auto_apply: bool = True  # PEACE applies what it works out; off means the student approves everything
     deadline_earlier: bool = True
     deadline_later: bool = False
     assessment_new: bool = True
@@ -357,8 +364,8 @@ def from_changes(session: Session, changes: list[Change], now: datetime) -> list
     return made
 
 
-def _audit(session: Session, action: str, proposal: Proposal, **detail: Any) -> None:
-    session.add(AuditEvent(actor="user", action=action, detail={"id": proposal.id, "title": proposal.title, **detail}))
+def _audit(session: Session, action: str, proposal: Proposal, actor: str = "user", **detail: Any) -> None:
+    session.add(AuditEvent(actor=actor, action=action, detail={"id": proposal.id, "title": proposal.title, **detail}))
 
 
 def _mail(call, *args):
@@ -372,20 +379,20 @@ def _mail(call, *args):
 
 
 def apply(session: Session, proposal: Proposal, now: datetime, keep: frozenset[int] = frozenset(),
-          skip: frozenset[int] = frozenset()) -> None:
+          skip: frozenset[int] = frozenset(), actor: str = "user") -> None:
     if proposal.status != "pending":
         raise Stale("Esta sugestão já foi decidida.")
     if proposal.kind == "concepts":  # `skip`: the concepts the student unticked
         proposal.result = mastery.apply_concepts(session, proposal, set(skip))
         proposal.status, proposal.decided_at = "applied", now
-        _audit(session, "proposal.apply", proposal, created=len(proposal.result["concepts"]))
+        _audit(session, "proposal.apply", proposal, actor=actor, created=len(proposal.result["concepts"]))
         return
     if proposal.kind == "requirements":
         if proposal.task is None:
             raise Stale("A tarefa já não existe.")
         proposal.result = requirements.apply_diff(session, proposal)
         proposal.status, proposal.decided_at = "applied", now
-        _audit(session, "proposal.apply", proposal)
+        _audit(session, "proposal.apply", proposal, actor=actor)
         return
     if proposal.kind in MAIL_FACTS:
         try:
@@ -393,12 +400,12 @@ def apply(session: Session, proposal: Proposal, now: datetime, keep: frozenset[i
         except mail_extract.Refused as e:
             raise Stale(str(e)) from None
         proposal.status, proposal.decided_at = "applied", now
-        _audit(session, "proposal.apply", proposal)
+        _audit(session, "proposal.apply", proposal, actor=actor)
         return
     if proposal.kind == "mail_cleanup":  # `keep`: the messages the student unticked
         proposal.result = _mail(mail.apply_cleanup, session, proposal, set(keep), now)
         proposal.status, proposal.decided_at = "applied", now
-        _audit(session, "proposal.apply", proposal, moved=len(proposal.result["moved"]))
+        _audit(session, "proposal.apply", proposal, actor=actor, moved=len(proposal.result["moved"]))
         return
     done = _run(session, proposal.kind, proposal.task, proposal.event, now)
     proposal.result = {"removed": done["removed"], "created": done["created"], "dropped": done.get("dropped", [])}
@@ -407,7 +414,33 @@ def apply(session: Session, proposal: Proposal, now: datetime, keep: frozenset[i
         for other in session.scalars(select(Proposal).where(Proposal.kind.in_(RECOVER), Proposal.status == "pending",
                                                             Proposal.id != proposal.id)):
             other.status, other.decided_at = "superseded", now
-    _audit(session, "proposal.apply", proposal, removed=len(done["removed"]), created=len(done["created"]))
+    _audit(session, "proposal.apply", proposal, actor=actor, removed=len(done["removed"]), created=len(done["created"]))
+
+
+def auto_apply(session: Session, now: datetime) -> list[Proposal]:
+    """Apply what is waiting, unless the student asked to approve everything. Oldest first, so of the recovery options
+    the usual window wins and the others are superseded. What no longer applies stays pending for the student."""
+    if not rules(session).auto_apply:
+        return []
+    done = []
+    query = select(Proposal).where(Proposal.status == "pending", Proposal.kind.not_in(ASK_FIRST)).order_by(Proposal.id)
+    for proposal in session.scalars(query).all():
+        if proposal.status != "pending":  # superseded by the option applied just before
+            continue
+        try:
+            with session.begin_nested():
+                apply(session, proposal, now, actor="peace")
+        except Stale:
+            continue
+        except Exception:  # one bad proposal must not stop the others or the worker
+            log.exception("could not apply proposal %s", proposal.id)
+            continue
+        done.append(proposal)
+    if done:
+        lines = [p.title for p in done[:3]] + ([f"+{len(done) - 3} outras"] if len(done) > 3 else [])
+        _add(session, key=f"auto:{done[-1].id}", kind="changes", title="A PEACE atualizou o teu plano", body="\n".join(lines),
+             url="/rever", actions=["open"], expires_at=now + timedelta(days=2))
+    return done
 
 
 def reject(session: Session, proposal: Proposal, now: datetime) -> None:

@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from peace import knowledge
-from peace.models import Event, PLANNABLE_STATUSES, StudyGuide, StudySession, Task
+from peace.models import Event, PLANNABLE_STATUSES, StudyGuide, StudyPlan, StudySession, Task
 from peace.planner import PlanPrefs, assessment_targets, free_slots, plan_day, ranked, recommend, remaining_minutes
 
 
@@ -26,6 +26,9 @@ def targets(session: Session, now: datetime, prefs: PlanPrefs):
         Task.status.in_(PLANNABLE_STATUSES), or_(Task.snoozed_until.is_(None), Task.snoozed_until <= now))))
     events = list(session.scalars(select(Event).where(
         Event.kind == 'exam', Event.starts_at > now, Event.starts_at <= now + timedelta(days=30))))
+    # An exam with its own study plan already has its sessions, chosen topic by topic.
+    with_plan = set(session.scalars(select(StudyPlan.event_id)))
+    events = [e for e in events if e.id not in with_plan]
     completed: dict[int, int] = {}
     for row in session.scalars(select(StudySession).where(StudySession.event_id.is_not(None), StudySession.status == 'done')):
         completed[row.event_id] = completed.get(row.event_id, 0) + int((row.ends_at - row.starts_at).total_seconds() // 60)

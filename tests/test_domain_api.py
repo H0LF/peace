@@ -192,9 +192,9 @@ def test_deadlines_window_and_changes_seen(client, session):
 
 
 def test_appearance_preferences_validate_and_persist(client):
-    assert client.get("/api/v1/preferences/appearance").json() == {"accent": "#ffb547", "name": ""}
+    assert client.get("/api/v1/preferences/appearance").json() == {"accent": "#ffb547", "name": "", "assistant_name": "PEACE"}
     assert client.put("/api/v1/preferences/appearance", json={"accent": "#6fd3ff", "name": "Ana"}).status_code == 200
-    assert client.get("/api/v1/preferences/appearance").json() == {"accent": "#6fd3ff", "name": "Ana"}
+    assert client.get("/api/v1/preferences/appearance").json() == {"accent": "#6fd3ff", "name": "Ana", "assistant_name": "PEACE"}
     for bad in ({"accent": "red"}, {"accent": "#12345"}, {"accent": "#ffb547", "name": "x" * 41}, {"accent": "#ffb547", "css": "x"}):
         assert client.put("/api/v1/preferences/appearance", json=bad).status_code == 422
 

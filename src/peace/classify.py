@@ -57,13 +57,13 @@ def classify(title: str, description: str, courses: Iterable[tuple[int, str | No
 
 def ask_model(title: str, description: str) -> str | None:
     """The local model's guess; None when it is unreachable or answers off-script."""
-    if not llm.llm_reachable():
+    if not llm.llm_reachable("background"):
         return None
     prompt = ("Classifica este evento de calendário de um estudante universitário português. Responde só com o tipo: "
               "class (aula), exam (exame, teste, frequência, defesa, apresentação avaliada) ou appointment (outro).\n"
               f"Título: {title}\nDescrição: {description[:500]}")
     try:
-        r = llm._llm("POST", "/api/chat", timeout=60, json={
+        r = llm._llm("POST", "/api/chat", purpose="background", timeout=60, json={
             "model": llm.current_model(), "stream": False, "think": "low", "keep_alive": llm.KEEP_ALIVE,
             "options": llm.LLM_OPTIONS, "messages": [{"role": "user", "content": prompt}],
             "format": {"type": "object", "properties": {"kind": {"type": "string", "enum": list(KINDS)}},

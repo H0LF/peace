@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from peace import routes
 from peace.auth import require_token
 from peace.db import get_session
-from peace.models import Notification, Preference
+from peace.models import Preference
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_token)])

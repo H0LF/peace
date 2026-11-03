@@ -25,10 +25,14 @@ from sqlalchemy.orm import Session
 
 from peace.auth import require_token
 from peace.db import get_engine, get_session
-from peace.llm import ask_json, llm_reachable, pause_reason
+from functools import partial
+from peace import llm
+from peace.llm import pause_reason
 from peace.mail_extract import containment
 from peace.models import AuditEvent, Concept, ConceptAnswer, ConceptLink, Course, Material, Proposal
 from peace.routes import get_now
+ask_json = partial(llm.ask_json, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 HALF_LIFE = timedelta(days=30)
 LOW, HIGH = 0.1, 0.9  # an 80 % interval
@@ -171,7 +175,7 @@ PROMPT = (
 
 def _topics(session: Session, course_id: int) -> dict[str, list[Material]]:
     out: dict[str, list[Material]] = {}
-    for m in session.scalars(select(Material).where(Material.course_id == course_id, Material.topics.is_not(None))):
+    for m in session.scalars(select(Material).where(Material.course_id == course_id, Material.topics.is_not(None), Material.duplicate_of_id.is_(None))):
         if m.doc_kind == "admin":
             continue  # evaluation rules and timetables are not subject matter
         for t in m.topics or []:

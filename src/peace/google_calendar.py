@@ -247,6 +247,8 @@ def task_body(t: Task) -> dict[str, Any]:
 
 def session_body(s: StudySession) -> dict[str, Any]:
     what = s.task.title if s.task else s.event.title if s.event else "sessão de estudo"
+    if s.topic:
+        what += f": {s.topic}"
     return {"summary": f"📚 Estudo: {what}", "start": _when(s.starts_at), "end": _when(s.ends_at),
             "description": "Sessão de estudo planeada pela PEACE",
             "extendedProperties": {"private": {"peace": f"session:{s.id}"}}}
@@ -491,7 +493,9 @@ def _pull_readonly(session: Session, p: dict[str, Any], model: Any) -> None:
                                                 Event.external_id.not_in(seen)).execution_options(include_cancelled=True))
         for item in items:
             external_id = f"{_short(calendar_id)}:{item['id']}"[:255]
-            if item.get("status") == "cancelled" or item.get("transparency") == "transparent":
+            # A copy made by another PEACE on this account (a second install) is not the student's own commitment.
+            other_peace = bool(item.get("extendedProperties", {}).get("private", {}).get("peace"))
+            if item.get("status") == "cancelled" or item.get("transparency") == "transparent" or other_peace:
                 session.execute(delete(Event).where(Event.source == "google", Event.external_id == external_id)
                                 .execution_options(include_cancelled=True))
                 continue

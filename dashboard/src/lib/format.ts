@@ -1,8 +1,10 @@
-// pt-PT formatting. Dates are shown in the browser's local time (the desktop runs in Europe/Lisbon).
+import { language } from './ui'
+
+// pt-PT or en-GB formatting. Dates are shown in the browser's local time (the desktop runs in Europe/Lisbon).
 
 import type { ExamState } from './api'
 
-const LOCALE = 'pt-PT'
+const LOCALE = language() === 'en' ? 'en-GB' : 'pt-PT'
 const timeFmt = new Intl.DateTimeFormat(LOCALE, { hour: '2-digit', minute: '2-digit' })
 const longDayFmt = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })
 const shortDayFmt = new Intl.DateTimeFormat(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' })

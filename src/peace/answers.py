@@ -16,8 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from peace.library import STOPWORDS, TOKEN, _singular
-from peace.llm import KEEP_ALIVE, LLM_OPTIONS, LLM_TIMEOUT, _llm, current_model, mark_unreachable
+from functools import partial
+from peace import llm
+from peace.llm import KEEP_ALIVE, LLM_OPTIONS, LLM_TIMEOUT, current_model, mark_unreachable
 from peace.models import Course, Material
+_llm = partial(llm._llm, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 CHUNK, STEP = 1200, 900  # characters; neighbouring excerpts overlap so a definition is not cut in half
 TOP, PER_FILE = 5, 2
@@ -56,14 +60,16 @@ def excerpts(m: Material) -> list[Excerpt]:
     return out
 
 
-def search(session: Session, question: str, course: Course | None = None, top: int = TOP) -> list[Excerpt]:
+def search(session: Session, question: str, course: Course | None = None, top: int = TOP, material_id: int | None = None) -> list[Excerpt]:
     """The excerpts that best match the question (BM25 over all excerpts of the files with text)."""
     query = [w for w in set(words(question))]
     if not query:
         return []
-    files = select(Material).where(Material.content.is_not(None), Material.content != "")
+    files = select(Material).where(Material.content.is_not(None), Material.content != "", Material.duplicate_of_id.is_(None))
     if course:
         files = files.where(Material.course_id == course.id)
+    if material_id is not None:
+        files = files.where(Material.id == material_id)
     pool = [(e, Counter(words(e.text))) for m in session.scalars(files) for e in excerpts(m)]
     if not pool:
         return []
@@ -78,7 +84,7 @@ def search(session: Session, question: str, course: Course | None = None, top: i
     for e, _ in sorted(pool, key=lambda p: p[0].score, reverse=True):
         if e.score <= 0 or len(best) == top:
             break
-        if per_file[e.material.id] < PER_FILE:
+        if material_id is not None or per_file[e.material.id] < PER_FILE:
             best.append(e)
             per_file[e.material.id] += 1
     return best
@@ -90,9 +96,9 @@ def source(e: Excerpt) -> dict:
             "vault_path": e.material.vault_path, "url": e.material.url}
 
 
-def answer(session: Session, question: str, course: Course | None, use_model: bool) -> tuple[str, list[dict]]:
-    """(the reply, its sources in citation order)."""
-    found = search(session, question, course)
+def answer(session: Session, question: str, course: Course | None, use_model: bool, material_id: int | None = None) -> tuple[str, list[dict]]:
+    """(the reply, its sources in citation order). `material_id`: only that one file."""
+    found = search(session, question, course, material_id=material_id)
     if not found:
         return NOT_FOUND, []
     sources = [source(e) for e in found]

@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from peace import sync
@@ -23,7 +23,8 @@ from peace.models import Material
 log = logging.getLogger(__name__)
 logging.getLogger("pypdf").setLevel(logging.ERROR)  # one line per quirk in a teacher's PDF is noise
 MAX_BYTES = 200 * 1024 * 1024
-MAX_TEXT = 200_000
+MAX_TEXT = 2_000_000  # a whole book; analysis reads all of it, in pieces
+OLD_MAX_TEXT = 200_000
 RETRY_AFTER = timedelta(days=1)
 
 
@@ -54,7 +55,7 @@ def extract_text(path: Path, filename: str) -> str:
 
         reader = pypdf.PdfReader(path)
         # "[p. N]" marks survive the whitespace folding below, so answers can cite the page.
-        raw = "\n".join(f"[p. {i}] " + (page.extract_text() or "") for i, page in enumerate(reader.pages[:400], 1))
+        raw = "\n".join(f"[p. {i}] " + (page.extract_text() or "") for i, page in enumerate(reader.pages[:3000], 1))
     elif ext in OFFICE:
         with zipfile.ZipFile(path) as z:
             parts = sorted((n for n in z.namelist() if n.startswith(OFFICE[ext]) and n.endswith(".xml")), key=_natural)
@@ -144,6 +145,17 @@ def _analyze(m: Material, path: Path, now: datetime) -> None:
         m.content = ""
     m.terms = term_frequencies(m.content) if m.content else {}
     m.fetched_at, m.fetched_modified_at, m.fetch_error = now, m.modified_at, None
+
+
+def read_whole_again(session: Session) -> int:
+    """Files cut off at the old limit: read them again from the local copy, with no download."""
+    done = 0
+    for m in session.scalars(select(Material).where(Material.kind == "file", func.length(Material.content) >= OLD_MAX_TEXT, func.length(Material.content) <= OLD_MAX_TEXT + 1)):
+        if cached_file(m.id).is_file():
+            _analyze(m, cached_file(m.id), m.fetched_at)
+            done += 1
+    session.commit()
+    return done
 
 
 def _fail(m: Material, error: str, now: datetime) -> None:

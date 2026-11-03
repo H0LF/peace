@@ -14,7 +14,7 @@ from peace.auth import _same, require_token, session_cookie, start_session
 from peace.config import get_settings
 from peace.db import get_session
 from peace.logs import configure_logging
-from peace import assistant, decisions, desktop, diagnostics, exams, google, google_calendar, mail, mastery, phone, practice, proposals, requirements, speech, workload, studytime
+from peace import assistant, brain, reading, studyplan, updates, decisions, desktop, diagnostics, exams, google, google_calendar, mail, mastery, phone, practice, proposals, requirements, speech, workload, studytime
 from peace.routes import router
 
 log = logging.getLogger(__name__)
@@ -23,6 +23,10 @@ DASHBOARD = Path(os.environ.get("PEACE_DASHBOARD_DIR", Path(__file__).parents[2]
 app = FastAPI(title="PEACE")
 app.include_router(router)
 app.include_router(assistant.router)
+app.include_router(brain.router)
+app.include_router(studyplan.router)
+app.include_router(reading.router)
+app.include_router(updates.router)
 app.include_router(desktop.router)
 app.include_router(phone.router)
 app.include_router(diagnostics.router)
@@ -38,6 +42,15 @@ app.include_router(practice.router)
 app.include_router(workload.router)
 app.include_router(speech.router)
 app.include_router(decisions.router)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")  # course files are untrusted: never guess their type
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")  # no other page can frame the dashboard to steal clicks
+    response.headers.setdefault("Referrer-Policy", "no-referrer")  # opening a link says nothing about this PEACE
+    return response
 
 
 @app.get("/health")

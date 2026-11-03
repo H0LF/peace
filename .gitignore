@@ -7,3 +7,4 @@ data/
 secrets/
 dashboard/public/holo/wasm/
 .omc/
+secrets.enc

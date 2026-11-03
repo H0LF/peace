@@ -1,17 +1,18 @@
 """Domain API: courses, tasks, events, study sessions, planning, deadlines, changes."""
 
+import json
 import mimetypes
 from datetime import UTC, date, datetime, time, timedelta
 import hashlib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from peace import schemas as s
@@ -22,6 +23,7 @@ from peace.db import get_session
 from peace.models import (
     OPEN_STATUSES,
     PLANNABLE_STATUSES,
+    AssistantMessage,
     AuditEvent,
     Change,
     Course,
@@ -374,8 +376,10 @@ def delete_session(session_id: int, session: Session = DB):
 
 def _with_materials(session: Session, rows: list[StudySession]) -> list[s.SessionOut]:
     """Sessions plus the files to study for each one's task (one relevance index per request)."""
-    index = knowledge.load_index(session) if rows else None
+    index = knowledge.load_index(session) if any(r.plan_materials is None for r in rows) else None
     def picks(row):
+        if row.plan_materials is not None:  # chosen for this session's topic when the plan was made
+            return row.plan_materials
         if row.task:
             return knowledge.suggest(index, row.task)
         if row.event and row.event.course_id:
@@ -536,9 +540,10 @@ def start_sync(background: BackgroundTasks, session: Session = DB):
 
 
 class AppearancePrefs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     accent: str = Field("#ffb547", pattern=r"^#[0-9a-fA-F]{6}$")  # the dashboard derives contrast-safe variants
     name: str = Field("", max_length=40)  # for the greeting: "Boa tarde, Ana"
+    assistant_name: str = Field("PEACE", min_length=1, max_length=30, pattern=r"^[^\W_][\w' .-]*$")  # "Jarvis, o que tenho amanhã?"
 
 
 # The key goes into a Lua expression on the desktop (hyprctl eval): only modifiers and one letter or digit.
@@ -586,6 +591,44 @@ def get_appearance(session: Session = DB):
 @router.put("/preferences/appearance", response_model=AppearancePrefs)
 def put_appearance(body: AppearancePrefs, session: Session = DB):
     return _save_prefs(session, "appearance", body)
+
+
+class UiPrefs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: Literal["pt", "en"] = "pt"
+    dock: Annotated[list[Annotated[str, Field(max_length=40)]], Field(max_length=40)] | None = None  # None: the default bar
+    features: dict[Annotated[str, Field(max_length=40)], bool] = Field(default_factory=dict, max_length=40)  # absent: the feature's default
+
+
+@router.get("/preferences/ui", response_model=UiPrefs)
+def get_ui(session: Session = DB):
+    row = session.get(Preference, "ui")
+    # Older installs saved a `mode`, gone since ADR-030.
+    return UiPrefs.model_validate({k: v for k, v in row.value.items() if k != "mode"}) if row else UiPrefs()
+
+
+@router.put("/preferences/ui", response_model=UiPrefs)
+def put_ui(body: UiPrefs, session: Session = DB):
+    return _save_prefs(session, "ui", body)
+
+
+# Everything readable the student owns. Not credentials, and not the raw file cache.
+EXPORTED = {"courses": Course, "tasks": Task, "events": Event, "study_sessions": StudySession, "materials": Material, "messages": AssistantMessage}
+OMITTED = {"content", "terms", "file_url"}  # file_url carries the Moodle token
+
+
+@router.get("/data/export")
+def export_data(session: Session = DB):
+    rows = {name: [{c.name: getattr(r, c.name) for c in model.__table__.columns if c.name not in OMITTED} for r in session.scalars(select(model))]
+            for name, model in EXPORTED.items()}
+    return Response(json.dumps(rows, default=str, ensure_ascii=False, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="peace-dados.json"'})
+
+
+@router.delete("/data/conversation", status_code=204)
+def clear_conversation(session: Session = DB):
+    session.execute(delete(AssistantMessage))
+    session.commit()
 
 
 @router.get("/preferences/voice", response_model=VoicePrefs)

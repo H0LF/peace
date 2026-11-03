@@ -20,8 +20,16 @@ export function useTheme(): [Theme, (t: Theme) => void] {
   const [theme, set] = useState<Theme>(read)
   useEffect(() => {
     const sync = () => set(read())
+    const otherTab = (e: StorageEvent) => {
+      if (e.key === THEME_KEY && (e.newValue === 'dark' || e.newValue === 'light')) document.documentElement.dataset.theme = e.newValue
+      sync()
+    }
     window.addEventListener('peace:theme', sync)
-    return () => window.removeEventListener('peace:theme', sync)
+    window.addEventListener('storage', otherTab)
+    return () => {
+      window.removeEventListener('peace:theme', sync)
+      window.removeEventListener('storage', otherTab)
+    }
   }, [])
   return [theme, setTheme]
 }

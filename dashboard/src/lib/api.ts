@@ -64,6 +64,9 @@ export interface StudySession {
   reason: string
   progress_note?: string | null
   materials: StudyMaterial[]
+  plan_id?: number | null
+  topic?: string | null
+  activity?: 'learn' | 'recall' | 'practice' | 'review' | null
 }
 /** A file to study for a task, chosen by content similarity, with a short pt-PT reason. */
 export interface StudyMaterial {
@@ -121,6 +124,7 @@ export interface Proposal {
   result: { removed: PlanSlot[]; created: PlanSlot[]; dropped?: WorkGap[]; moved?: number[] } | null
 }
 export interface ReviewRules {
+  auto_apply: boolean
   deadline_earlier: boolean
   deadline_later: boolean
   assessment_new: boolean
@@ -278,7 +282,19 @@ export interface StudyTimeReport {
   logs: StudyLogEntry[]
   calibration: { course_id: number; name: string; factor: number; tasks: number; current: number | null }[]
 }
+export interface FileRef {
+  name: string
+  why: string
+  action: 'abrir' | 'entregar'
+  material_id: number | null
+}
 export interface Material {
+  fetched_at?: string | null
+  parent_id?: number | null
+  duplicate_of_id?: number | null
+  duplicate_kind?: string | null
+  summary?: string | null
+  file_refs?: FileRef[] | null
   id: number
   course: CourseRef | null
   section: string
@@ -658,6 +674,7 @@ export interface VoiceTest {
 export interface Appearance {
   accent: string
   name: string
+  assistant_name: string
 }
 export interface NotifyPrefs {
   enabled: boolean
@@ -731,7 +748,60 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export type StudyPlan = {
+  id: number
+  exam: { id: number; title: string; starts_at: string; course_id: number | null; course: string | null }
+  basis: 'guide' | 'concepts' | 'files' | 'none'
+  assumptions: string[]
+  topics: { topic: string; minutes: number; state: string; done: number }[]
+  needed_minutes: number
+  planned_minutes: number
+  done_minutes: number
+  short_minutes: number
+  enough_time: boolean
+  progress: number
+  sessions: StudySession[]
+}
+export type StudyPlans = { plans: StudyPlan[]; exams: { id: number; title: string; starts_at: string; course: string | null }[] }
+export type UpdateInfo = {
+  version: string
+  kind: 'docker' | 'linux' | null
+  policy: 'auto' | 'notify' | 'off'
+  available: { version: string; notes: string } | null
+  checked_at: string | null
+  check_error: string | null
+  status: 'idle' | 'requested' | 'installing' | 'done' | 'failed'
+  message: string | null
+}
+export type UiPrefs = { language: 'pt' | 'en'; dock: string[] | null; features: Record<string, boolean> }
+export type AiShare = { chat: boolean; documents: boolean; background: boolean; mail: boolean }
+export type AiChoice = { provider: string; model: string; size: number | null; price: number | null }
+export type ProviderModel = { id: string; name: string; price: number | null }
+export type PlanUsage = { plan: string | null; reached: boolean; windows: { seconds: number; used: number; resets_at: string }[] }
+export type AiOverview = {
+  active: { provider: string; model: string; reachable: boolean; error: string | null }
+  previous: { provider: string; model: string } | null
+  choices: AiChoice[]
+  automatic: boolean
+  providers: { id: string; name: string; keys_url: string; login: boolean; connected: boolean; error: string | null }[]
+  share: AiShare
+  key_storage: 'keychain' | 'file'
+}
+
+const writing = new Map<string, Promise<unknown>>()
+
+/** A double click sends one write: the same request while it is still on its way shares its answer. */
+function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!init.method || init.method === 'GET' || (init.body && typeof init.body !== 'string')) return send<T>(path, init)
+  const key = `${init.method} ${path} ${init.body ?? ''}`
+  const running = writing.get(key) as Promise<T> | undefined
+  if (running) return running
+  const sent = send<T>(path, init).finally(() => writing.delete(key))
+  writing.set(key, sent)
+  return sent
+}
+
+async function send<T>(path: string, init: RequestInit): Promise<T> {
   const r = await fetch(path, {
     credentials: 'same-origin',
     ...init,
@@ -903,6 +973,31 @@ export const api = {
   testPhone: () => request<void>('/api/v1/phone/test', { method: 'POST' }),
   obsidian: () => request<ObsidianPrefs>('/api/v1/preferences/obsidian'),
   chooseVault: (path: string) => request<ObsidianPrefs>('/api/v1/preferences/obsidian', { method: 'PUT', ...body({ path }) }),
+  ai: () => request<AiOverview>('/api/v1/ai'),
+  setActiveModel: (provider: string, model: string) => request<AiOverview>('/api/v1/ai/active', { method: 'PUT', ...body({ provider, model }) }),
+  saveProviderKey: (id: string, key: string) => request<AiOverview>(`/api/v1/ai/providers/${id}/key`, { method: 'PUT', ...body({ key }) }),
+  startProviderLogin: (id: string) => request<{ url: string; code: string; interval: number }>(`/api/v1/ai/providers/${id}/login`, { method: 'POST' }),
+  pollProviderLogin: (id: string) => request<{ connected: boolean }>(`/api/v1/ai/providers/${id}/login/poll`, { method: 'POST' }),
+  removeProviderKey: (id: string) => request<AiOverview>(`/api/v1/ai/providers/${id}/key`, { method: 'DELETE' }),
+  providerUsage: (id: string) => request<PlanUsage>(`/api/v1/ai/providers/${id}/usage`),
+  providerModels: (id: string) => request<ProviderModel[]>(`/api/v1/ai/providers/${id}/models`),
+  removeFavourite: (id: string, model: string) => request<AiOverview>(`/api/v1/ai/providers/${id}/models/${model}`, { method: 'DELETE' }),
+  saveShare: (share: AiShare) => request<AiOverview>('/api/v1/ai/share', { method: 'PUT', ...body(share) }),
+  studyPlans: () => request<StudyPlans>('/api/v1/study-plans'),
+  createStudyPlan: (event_id: number) => request<StudyPlan>('/api/v1/study-plans', { method: 'POST', ...body({ event_id }) }),
+  replanStudyPlan: (id: number) => request<StudyPlan>(`/api/v1/study-plans/${id}/replan`, { method: 'POST' }),
+  deleteStudyPlan: (id: number) => request<void>(`/api/v1/study-plans/${id}`, { method: 'DELETE' }),
+  recentReading: () => request<{ id: number; at: string }[]>('/api/v1/reading/recent'),
+  markOpened: (id: number) => request<void>(`/api/v1/materials/${id}/opened`, { method: 'POST' }),
+  askDocument: (id: number, question: string, summary = false) => request<{ reply: string; sources: { title: string; detail: string }[] }>(`/api/v1/materials/${id}/ask`, { method: 'POST', ...body({ question, summary }) }),
+  openOnPc: (id: number) => request<{ reply: string; connected: boolean }>(`/api/v1/materials/${id}/open-on-pc`, { method: 'POST' }),
+  updates: () => request<UpdateInfo>('/api/v1/updates'),
+  checkUpdates: () => request<UpdateInfo>('/api/v1/updates/check', { method: 'POST' }),
+  installUpdate: () => request<UpdateInfo>('/api/v1/updates/install', { method: 'POST' }),
+  saveUpdatePolicy: (policy: UpdateInfo['policy']) => request<UpdateInfo>('/api/v1/updates/policy', { method: 'PUT', ...body({ policy }) }),
+  clearConversation: () => request<void>('/api/v1/data/conversation', { method: 'DELETE' }),
+  uiPrefs: () => request<UiPrefs>('/api/v1/preferences/ui'),
+  saveUiPrefs: (p: UiPrefs) => request<UiPrefs>('/api/v1/preferences/ui', { method: 'PUT', ...body(p) }),
   models: () => request<Models>('/api/v1/assistant/models'),
   chooseModel: (model: string) => request<void>('/api/v1/preferences/assistant', { method: 'PUT', ...body({ model }) }),
   voicePrefs: () => request<VoicePrefs>('/api/v1/preferences/voice'),
@@ -921,8 +1016,8 @@ export const api = {
   ask: (text: string, source: 'text' | 'voice' = 'text') => request<AssistantReply>('/api/v1/assistant/ask', { method: 'POST', ...body({ text, source }) }),
   hear: (wav: Blob) => request<{ text: string }>('/api/v1/voice/hear', { method: 'POST', body: wav, headers: { 'Content-Type': 'audio/wav' } }),
   /** The spoken reply, or null when spoken replies are off. */
-  say: async (text: string) => {
-    const r = await fetch('/api/v1/voice/say', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...body({ text }) })
+  say: async (text: string, voice?: string) => {
+    const r = await fetch('/api/v1/voice/say', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...body({ text, voice }) })
     if (!r.ok) throw new ApiError(r.status, (await r.json().catch(() => null))?.detail ?? r.statusText)
     return r.status === 204 ? null : r.blob()
   },

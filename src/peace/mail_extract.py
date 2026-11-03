@@ -19,9 +19,12 @@ from sqlalchemy.orm import Session
 
 from peace import when
 from peace.config import get_settings
-from peace.llm import ask_json, llm_reachable
+from functools import partial
+from peace import llm
 from peace.models import OPEN_STATUSES, Course, Event, MailMessage, Proposal, Task
 from peace.notifications import _add, _when
+ask_json = partial(llm.ask_json, purpose="mail")
+llm_reachable = partial(llm.llm_reachable, purpose="mail")
 
 log = logging.getLogger(__name__)
 
@@ -234,7 +237,7 @@ def extract_pending(session: Session, now: datetime) -> int:
     if made:
         today = now.astimezone(tz).date()
         _add(session, key=f"mail:facts:{today}", kind="changes", title="Datas nos emails da universidade",
-             body=f"{made} {'sugestão' if made == 1 else 'sugestões'} para rever.", url="/rever", actions=["open"],
+             body=f"{made} {'data encontrada' if made == 1 else 'datas encontradas'}.", url="/rever", actions=["open"],
              expires_at=now + timedelta(days=2))
         session.commit()
     return made

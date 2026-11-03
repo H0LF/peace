@@ -40,6 +40,9 @@
   --graph-exam: #6fd3ff;
   --graph-inferred: #7cc6e8;
   --glass: rgb(18 16 13 / 0.76);
+  --wp-bg: color-mix(in srgb, var(--accent) 7%, #05060a);
+  --scrim: rgb(0 0 0 / 0.85);
+  --scrim-mid: rgb(0 0 0 / 0.25);
   --shadow: 0 10px 35px rgb(0 0 0 / 0.14);
 }
 
@@ -75,6 +78,9 @@
   --graph-exam: #386aa0;
   --graph-inferred: #56829a;
   --glass: rgb(255 255 255 / 0.78);
+  --wp-bg: color-mix(in srgb, var(--accent) 6%, #f5f5f7);
+  --scrim: rgb(255 255 255 / 0.94);
+  --scrim-mid: rgb(255 255 255 / 0.5);
   --shadow: 0 8px 28px rgb(30 40 55 / 0.07);
 }
 
@@ -104,6 +110,14 @@
 }
 
 @layer base {
+  /* Everything still scrolls, by wheel, touch and keyboard; no bar is ever drawn. */
+  * {
+    scrollbar-width: none;
+  }
+  ::-webkit-scrollbar {
+    display: none;
+  }
+
   html {
     background: var(--bg);
     color: var(--text);
@@ -453,5 +467,15 @@
   }
   .card-sweep {
     display: none;
+  }
+}
+
+/* A grid item's minimum width is its content by default: one long file name would push the whole page sideways. */
+@layer base {
+  .grid > * {
+    min-width: 0;
+  }
+  body {
+    overflow-wrap: break-word;
   }
 }

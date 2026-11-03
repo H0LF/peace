@@ -5,6 +5,7 @@ import { Layout } from './components/Layout'
 import { ToastProvider } from './components/ui'
 import './index.css'
 import { api } from './lib/api'
+import { startTranslation } from './lib/i18n'
 import ActivityPage from './pages/Activity'
 import Calendar from './pages/Calendar'
 import Cockpit from './pages/Cockpit'
@@ -35,6 +36,8 @@ function RequireSession({ children }: { children: ReactNode }) {
   if (state === 'checking') return null
   return state === 'ok' ? children : <Navigate to="/entrar" replace />
 }
+
+void startTranslation()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

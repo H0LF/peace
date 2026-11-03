@@ -32,7 +32,23 @@ jobs:
         env:
           PEACE_DATABASE_URL: postgresql+psycopg://peace@127.0.0.1:55432/peace_test
       - name: Installer scripts parse
-        run: bash -n install.sh desktop/install-local.sh scripts/*.sh
+        run: bash -n install.sh install-mac.sh desktop/install-local.sh scripts/*.sh
+      - name: Every dashboard string has English
+        working-directory: dashboard
+        run: npm ci --no-audit --no-fund && npm run test:i18n
+
+  # GitHub's Macs cannot run Docker, so this checks the script under macOS's own old bash, not a full install.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scripts parse under the system bash
+        run: /bin/bash -n install-mac.sh && /bin/bash -n scripts/update.sh && /bin/bash -n scripts/uninstall-mac.sh
+      - name: The installer recommends the right AI model
+        run: |
+          check() { [ "$(PEACE_INSTALLER_TEST=1 /bin/bash -c "source ./install-mac.sh; recommended $1 $2")" = "$3" ] || { echo "$1 GB, $2 free: wanted $3"; exit 1; }; }
+          check 8 500 4; check 16 500 2; check 32 500 1; check 64 25 2; check 4 500 5; check 32 17 4
+          PEACE_INSTALLER_TEST=1 /bin/bash -c 'source ./install-mac.sh; pick_model 16 500 < /dev/null; [ "$MODEL" = qwen3:8b ]'
 
   docker:
     runs-on: ubuntu-latest
@@ -63,6 +79,12 @@ jobs:
       - name: The installer recommends the right AI model
         shell: powershell  # Windows PowerShell 5.1, what `irm | iex` runs in on a new PC
         run: .\tests\install_choice.ps1
+      - name: The updater parses
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\update.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }
       - name: PostgreSQL for the test suite (preinstalled, stopped)
         shell: pwsh
         run: |

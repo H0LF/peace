@@ -191,9 +191,14 @@ export function HoloHandsProvider({ children }: { children: ReactNode }) {
 }
 
 /** The sidebar switch (lit while on). Also the H key. */
-export function HoloButton() {
-  const { on, starting, toggle } = useHolo()
+/** The H key, whether or not the button is on the bar; and a disabled feature stops the camera. */
+export function useHoloControls(enabled: boolean) {
+  const { on, toggle } = useHolo()
   useEffect(() => {
+    if (!enabled && on) toggle()
+  }, [enabled, on, toggle])
+  useEffect(() => {
+    if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== 'h' || e.repeat || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
       if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable], [role=textbox], dialog[open]')) return
@@ -201,7 +206,11 @@ export function HoloButton() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggle])
+  }, [enabled, toggle])
+}
+
+export function HoloButton() {
+  const { on, starting, toggle } = useHolo()
   return (
     <button
       type="button"

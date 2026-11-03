@@ -223,7 +223,7 @@ export function Segmented<T extends string>({
   label: string
 }) {
   return (
-    <div role="tablist" aria-label={label} className="inline-flex max-w-full overflow-x-auto rounded-lg border border-line bg-surface-2 p-0.5">
+    <div role="tablist" aria-label={label} className="inline-flex max-w-full flex-wrap rounded-lg border border-line bg-surface-2 p-0.5">
       {options.map((o) => (
         <button
           key={o.value}

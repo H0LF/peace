@@ -1,3 +1,5 @@
+import { StudyPlans } from '../components/StudyPlans'
+import { useFeature } from '../lib/ui'
 import { CalendarCheck2, CalendarRange, Check, ChevronLeft, ChevronRight, MoreHorizontal, Pencil, SkipForward, Timer, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
@@ -132,6 +134,7 @@ function SessionRow({ s, now, onEdit }: { s: StudySession; now: Date; onEdit: (s
 }
 
 export default function Planner() {
+  const timer = useFeature('timer')
   const now = useNow()
   const toast = useToast()
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()))
@@ -169,7 +172,7 @@ export default function Planner() {
         subtitle={
           <>
             Sessões propostas a partir dos prazos, prioridades e tempo livre.{' '}
-            <Link to="/definicoes" className="text-accent hover:underline">
+            <Link to="/definicoes?separador=estudo" className="text-accent hover:underline">
               Ajustar preferências
             </Link>
           </>
@@ -186,7 +189,9 @@ export default function Planner() {
         }
       />
 
-      <TimerCard />
+      {timer && <TimerCard />}
+
+      <StudyPlans now={now} />
 
       {recommendation.data && (
         <Card className="mb-6" title="Recomendado agora">

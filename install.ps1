@@ -188,7 +188,8 @@ if (-not (Test-Path $EnvFile) -or -not (Select-String -Path $EnvFile -Pattern '^
 $Token = ((Get-Content $EnvFile | Where-Object { $_ -like 'PEACE_API_TOKEN=*' }) -split '=', 2)[1]
 # The model the user chose, even if a bigger one was already on this PC. Settings > Assistente can still change it.
 $kept = @(Get-Content $EnvFile | Where-Object { $_ -notlike 'PEACE_LLM_MODEL=*' })
-Write-TextFile $EnvFile ($kept + @($(if ($Model) { "PEACE_LLM_MODEL=$Model" })))
+$kept = @($kept | Where-Object { $_ -notlike 'PEACE_INSTALL_KIND=*' })
+Write-TextFile $EnvFile ($kept + @('PEACE_INSTALL_KIND=docker') + @($(if ($Model) { "PEACE_LLM_MODEL=$Model" })))
 Write-TextFile (Join-Path $App '.env') @("PEACE_ENV_FILE=$EnvFile", "PEACE_DB_PASSWORD_FILE=$DbPassword", "PEACE_STT_MODEL=$Stt")
 
 Say 'A preparar os serviços da PEACE no Docker (na primeira vez demora alguns minutos)…'
@@ -229,6 +230,11 @@ $link.WorkingDirectory = Join-Path $App 'desktop'
 $link.Description = 'PEACE: notificações e voz'
 $link.Save()
 Start-Process $link.TargetPath -ArgumentList $link.Arguments -WorkingDirectory $link.WorkingDirectory
+
+# --- 6. Updates: Settings > Geral decides; this task asks PEACE every 15 minutes whether one is due ----------------
+$UpdateAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$App\scripts\update.ps1`""
+$UpdateTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
+Register-ScheduledTask -TaskName 'PEACE update' -Action $UpdateAction -Trigger $UpdateTrigger -Force | Out-Null
 
 # --- Done -------------------------------------------------------------------------------------------------
 Start-Process "http://127.0.0.1:8420/entrar#token=$Token"

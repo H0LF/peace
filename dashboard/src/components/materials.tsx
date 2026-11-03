@@ -11,7 +11,7 @@ export const safeHttp = (url: string | null | undefined) => (url && /^https?:\/\
 export const obsidianHref = (path: string) => `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(path)}`
 /** The vault and Obsidian are on the PC PEACE runs on: from any other device, files open in the browser. */
 export const onThisPc = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
-const vaultLink = (m: { id: number; vault_path: string }) =>
+export const vaultLink = (m: { id: number; vault_path: string }) =>
   onThisPc ? { href: obsidianHref(m.vault_path) } : { href: `/api/v1/materials/${m.id}/file`, target: '_blank', rel: 'noreferrer noopener' }
 
 /** Files suggested for a study session: open the vault copy in Obsidian, or the original on the site. */
@@ -89,7 +89,7 @@ function fileType(m: Material): { label: string; hue: number | null } {
   return hit ? { label: hit[1], hue: hit[2] } : { label: name.split('.').pop()?.toUpperCase().slice(0, 6) || 'Ficheiro', hue: null }
 }
 
-const size = (bytes: number | null) =>
+export const size = (bytes: number | null) =>
   bytes == null ? '' : bytes < 1_000_000 ? `${Math.max(1, Math.round(bytes / 1000))} KB` : `${(bytes / 1_000_000).toFixed(1).replace('.', ',')} MB`
 
 /** Course files and links grouped by section; `showCourse` prefixes each section with its course. */

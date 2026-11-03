@@ -22,12 +22,16 @@ from peace.auth import require_token
 from peace.changes import upsert_from_source
 from peace.config import get_settings
 from peace.db import get_session
-from peace.llm import ask_json, current_model, llm_reachable
+from functools import partial
+from peace import llm
+from peace.llm import current_model
 from peace.models import OPEN_STATUSES, Event, Material, StudyGuide, Task
 from peace.planner import PlanPrefs, SMALL_WORK, guess_minutes
 from peace.routes import _prefs, get_now
 from peace.requirements import ModelUnavailable, PAGE, _norm, chunks, clean, page_of
 from peace.when import DATE, fold, parse_when
+ask_json = partial(llm.ask_json, purpose="documents")
+llm_reachable = partial(llm.llm_reachable, purpose="documents")
 
 log = logging.getLogger(__name__)
 SOURCE = "brief"

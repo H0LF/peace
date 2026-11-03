@@ -192,6 +192,9 @@ class SessionOut(Out):
     reason: str
     progress_note: str | None = None
     materials: list[StudyMaterial] = []
+    plan_id: int | None = None
+    topic: str | None = None
+    activity: str | None = None
 
 
 class ChangeOut(Out):
@@ -223,6 +226,12 @@ class MaterialOut(Out):
     url: str | None
     vault_path: str | None
     created_at: datetime
+    fetched_at: datetime | None = None
+    parent_id: int | None = None
+    duplicate_of_id: int | None = None
+    duplicate_kind: str | None = None
+    summary: str | None = None
+    file_refs: list[dict[str, Any]] | None = None
 
 
 class NotificationOut(Out):

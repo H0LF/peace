@@ -11,6 +11,7 @@ type Kind = 'class' | 'exam' | 'appointment' | 'session' | 'deadline'
 const FIRST_HOUR = 8
 const LAST_HOUR = 23
 const HOUR_PX = 52
+const SAME_BLOCK_MS = 30 * 60_000 // the planner's breaks: two sessions of one subject this close are one stretch of study
 
 type Item = {
   id: string
@@ -24,11 +25,45 @@ type Item = {
   url?: string | null
   note?: string
   source?: string
+  parts?: { start: Date; end: Date; topic?: string | null; done: boolean }[]
   event?: CalEvent
 }
 
 const KIND_LABEL: Record<Kind, string> = { class: 'Aulas', exam: 'Avaliações', appointment: 'Compromissos', session: 'Estudo', deadline: 'Prazos' }
 const KIND_ONE: Record<Kind, string> = { class: 'Aula', exam: 'Avaliação', appointment: 'Compromisso', session: 'Sessão de estudo', deadline: 'Prazo' }
+
+/** The planner cuts study into short sessions with breaks; on the calendar a stretch of one subject is one block. */
+function studyBlocks(sessions: StudySession[]): Item[] {
+  const out: Item[] = []
+  const last = new Map<string, Item>()
+  for (const s of [...sessions].filter((x) => x.status !== 'skipped').sort((a, b) => a.starts_at.localeCompare(b.starts_at))) {
+    const start = new Date(s.starts_at)
+    const end = new Date(s.ends_at)
+    const part = { start, end, topic: s.topic, done: s.status === 'done' }
+    const title = s.task?.title ?? s.event?.title ?? 'Sessão de estudo'
+    const key = `${s.event?.id}|${s.task?.id}|${s.course_id}|${title}`
+    const open = last.get(key)
+    if (open && sameDay(open.start, start) && start.getTime() - open.end.getTime() <= SAME_BLOCK_MS) {
+      if (end > open.end) open.end = end
+      open.parts!.push(part)
+      continue
+    }
+    const item: Item = {
+      id: `s${s.id}`,
+      kind: 'session',
+      title,
+      start,
+      end,
+      color: 'var(--accent)',
+      course: null,
+      note: [s.status === 'done' ? 'Concluída' : 'Planeada', s.reason].filter(Boolean).join(' · '),
+      parts: [part],
+    }
+    out.push(item)
+    last.set(key, item)
+  }
+  return out
+}
 
 function toItems(events: CalEvent[], sessions: StudySession[], tasks: Task[]): Item[] {
   return [
@@ -45,18 +80,7 @@ function toItems(events: CalEvent[], sessions: StudySession[], tasks: Task[]): I
       source: e.source,
       event: e,
     })),
-    ...sessions
-      .filter((s) => s.status !== 'skipped')
-      .map((s) => ({
-        id: `s${s.id}`,
-        kind: 'session' as const,
-        title: s.task?.title ?? s.event?.title ?? 'Sessão de estudo',
-        start: new Date(s.starts_at),
-        end: new Date(s.ends_at),
-        color: 'var(--accent)',
-        course: null,
-        note: [s.status === 'done' ? 'Concluída' : 'Planeada', s.reason].filter(Boolean).join(' · '),
-      })),
+    ...studyBlocks(sessions),
     ...tasks
       .filter((t) => t.due_at)
       .map((t) => ({
@@ -734,7 +758,23 @@ export default function Calendar() {
                 </dd>
               </div>
             )}
-            {open.note && (
+            {open.parts && open.parts.length > 1 && (
+              <div>
+                <dt className="text-xs text-faint">Partes</dt>
+                <dd>
+                  <ul className="grid gap-1">
+                    {open.parts.map((p) => (
+                      <li key={p.start.toISOString()}>
+                        <span className="num">{time(p.start)}–{time(p.end)}</span>
+                        {p.topic && ` · ${p.topic}`}
+                        {p.done && ' · Concluída'}
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </div>
+            )}
+            {open.note && (!open.parts || open.parts.length === 1) && (
               <div>
                 <dt className="text-xs text-faint">Notas</dt>
                 <dd>{open.note}</dd>

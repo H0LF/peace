@@ -226,7 +226,7 @@ export default function Review() {
     <div className="grid max-w-4xl gap-6">
       <PageHeader
         title="Rever"
-        subtitle="O que a PEACE sugere mudar depois de alterações nos sites ou de estudo por fazer. Nada muda sem a tua decisão."
+        subtitle="O que a PEACE mudou ou quer mudar depois de alterações nos sites ou de estudo por fazer. Podes desfazer o que já foi feito."
         actions={
           <Button disabled={recovering} onClick={recover}>
             Recuperar estudo em falta

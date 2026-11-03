@@ -174,6 +174,12 @@ class Material(Sourced, Timestamps, Base):
     doc_kind: Mapped[str | None] = mapped_column(String(32))
     topics_model: Mapped[str | None] = mapped_column(String(64))
     topics_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The full reading (see peace.improve): inside an archive, a copy of another file, what it says, the files it refers to.
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), index=True)
+    duplicate_of_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="SET NULL"))
+    duplicate_kind: Mapped[str | None] = mapped_column(String(16))  # copy | translation
+    summary: Mapped[str | None] = mapped_column(Text)
+    file_refs: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     briefs_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # deliveries read (see peace.workload)
 
     course: Mapped[Course | None] = relationship(lazy="selectin")
@@ -194,6 +200,24 @@ class StudyGuide(Timestamps, Base):
     model: Mapped[str | None] = mapped_column(String(64))
 
 
+class StudyPlan(Timestamps, Base):
+    """Preparation for one exam (see peace.studyplan). `topics`: what must be studied and for how long; the sessions
+    are ordinary study sessions, so the week, the calendar and Google see them too."""
+
+    __tablename__ = "study_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True)
+    topics: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    basis: Mapped[str] = mapped_column(String(16))  # guide | concepts | files | none: where the topics came from
+    assumptions: Mapped[list[str]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    needed_minutes: Mapped[int] = mapped_column(Integer)
+    placed_minutes: Mapped[int] = mapped_column(Integer)
+    signature: Mapped[str] = mapped_column(String(64))  # the exam's date and the evidence: a change means replanning
+
+    event: Mapped[Event] = relationship(lazy="selectin")
+
+
 class StudySession(Timestamps, Base):
     __tablename__ = "study_sessions"
     __table_args__ = (
@@ -210,6 +234,10 @@ class StudySession(Timestamps, Base):
     status: Mapped[str] = mapped_column(String(16), server_default="planned")
     reason: Mapped[str] = mapped_column(Text, server_default="")
     progress_credit: Mapped[int] = mapped_column(SmallInteger, server_default='0')
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("study_plans.id", ondelete="SET NULL"), index=True)
+    topic: Mapped[str | None] = mapped_column(String(200))  # with a plan: what this session is about
+    activity: Mapped[str | None] = mapped_column(String(16))  # learn | recall | practice | review
+    plan_materials: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     task: Mapped[Task | None] = relationship(lazy="selectin")
     event: Mapped[Event | None] = relationship(lazy="selectin")

@@ -1,3 +1,4 @@
+import time
 import os
 from pathlib import Path
 
@@ -31,6 +32,12 @@ def schema():
     with get_engine().begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
     command.upgrade(ALEMBIC, "head")
+
+
+@pytest.fixture(autouse=True)
+def no_speech_service(monkeypatch):
+    # This machine may really run one on port 3900; a test's answer must not depend on that.
+    monkeypatch.setattr("peace.speech._engine", (time.monotonic(), []))
 
 
 @pytest.fixture(autouse=True)
