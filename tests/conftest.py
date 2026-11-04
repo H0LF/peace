@@ -16,6 +16,7 @@ os.environ.setdefault("INFORESTUDANTE_URL", "https://inforestudante.example.pt/n
 os.environ.setdefault("PEACE_ACADEMIC_DOMAINS", "escola.example.pt,politecnico.example.pt")
 os.environ.setdefault("PEACE_BACKUP_DIR", "/nonexistent/peace-backups")  # never the real backups
 
+from peace import llm
 from peace.api import app  # noqa: E402
 from peace.config import database_url  # noqa: E402
 from peace.db import get_engine  # noqa: E402
@@ -32,6 +33,15 @@ def schema():
     with get_engine().begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
     command.upgrade(ALEMBIC, "head")
+
+
+@pytest.fixture(autouse=True)
+def fresh_model_check():
+    # The check is cached for 30 s: what one test saw, this PC's real Ollama included, must not decide the next test.
+    saved = dict(llm._reachable)
+    yield
+    llm._reachable.clear()
+    llm._reachable.update(saved)
 
 
 @pytest.fixture(autouse=True)

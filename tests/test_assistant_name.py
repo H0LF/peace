@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from peace import assistant, llm, speech
+from peace import assistant, speech
 from peace.assistant import addressed, named, study_blocks
 
 
@@ -170,8 +170,7 @@ def test_the_heartbeat_accepts_what_a_voice_turn_reports(client):
 
 
 
-def test_a_new_install_starts_with_nothing_connected_and_nobody_in_it(client, monkeypatch):
-    monkeypatch.setattr(llm, "llm_reachable", lambda *a: False)  # not this PC's Ollama, whose answer would stay cached for later tests
+def test_a_new_install_starts_with_nothing_connected_and_nobody_in_it(client):
     ai = client.get("/api/v1/ai").json()
     assert ai["active"]["provider"] in ("", None)
     assert not [p for p in ai["providers"] if p.get("connected") or p.get("has_key")]
