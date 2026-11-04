@@ -80,7 +80,6 @@ Get-ChildItem 'HKLM:\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1
 $VramGB = [math]::Round($Vram / 1GB, 1)
 $RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
 $FreeGB = [math]::Round((Get-PSDrive $env:SystemDrive.TrimEnd(':')).Free / 1GB, 1)
-$Threads = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
 $Stt = 'small'  # "medium" hears little better and answers twice as slowly
 
 $ModelFile = Join-Path $PeaceHome 'model.txt'
