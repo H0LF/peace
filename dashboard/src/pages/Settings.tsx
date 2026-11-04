@@ -32,7 +32,12 @@ const MODIFIERS = ['SUPER', 'SUPER + SHIFT', 'SUPER + ALT', 'CTRL + ALT']
 const KEYS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789']
 
 /** Supertonic's ids (F1…F5) as people say them. */
-const voiceName = (v: string) => (/^F\d$/.test(v) ? `Voz ${v.slice(1)}` : v)
+// Gender from each voice's model card and its measured pitch; Tugão's card says nothing, so by ear. Unknown here: not offered.
+const VOICE_GROUPS = {
+  pt: [{ label: 'Femininas', voices: { dii: 'Dii' } }, { label: 'Masculinas', voices: { tugao: 'Tugão', miro: 'Miro' } }],
+  en: [{ label: 'Femininas', voices: { ljspeech: 'LJSpeech (EUA)', cori: 'Cori (Reino Unido)' } }, { label: 'Masculinas', voices: { joe: 'Joe (EUA)', mike: 'Mike (EUA)' } }],
+} as const
+const voicesOf = (language: 'pt' | 'en'): string[] => VOICE_GROUPS[language].flatMap((g) => Object.keys(g.voices))
 
 /** Push-to-talk key, spoken replies and voice; the PC's agent applies them within 30 s. */
 function VoiceForm() {
@@ -57,6 +62,8 @@ function VoiceForm() {
   const voices = status.data?.voice.voices ?? []
   const connected = !!status.data?.desktop.connected
   const audio = status.data?.voice.audio
+  const offered = voicesOf(form.language).filter((v) => voices.includes(v))
+  const chosenVoice = offered.includes(form.voice) ? form.voice : offered[0]
 
   async function testAudio(action: 'meter' | 'stt' | 'tts', voice?: string) {
     try {
@@ -72,7 +79,7 @@ function VoiceForm() {
   async function listenHere(voice: string) {
     setPlaying(true)
     try {
-      const wav = await api.say('Olá, esta é a minha voz.', voice)
+      const wav = await api.say(form!.language === 'en' ? 'Hello, this is my voice.' : 'Olá, esta é a minha voz.', voice)
       if (wav) {
         const url = URL.createObjectURL(wav)
         const audio = new Audio(url)
@@ -92,7 +99,7 @@ function VoiceForm() {
   async function submit(e: FormEvent) {
     e.preventDefault()
     try {
-      await api.saveVoicePrefs(form!)
+      await api.saveVoicePrefs({ ...form!, voice: chosenVoice ?? form!.voice })
       toast('Voz guardada: o PC aplica dentro de 30 s', 'ok')
     } catch (err) {
       toast(`Não foi possível guardar: ${(err as Error).message}`, 'error')
@@ -137,29 +144,25 @@ function VoiceForm() {
       </div>
       <Checkbox checked={form.speak} onChange={(speak) => setForm({ ...form, speak })} label="Responder em voz alta (senão, só por notificação)" />
       <Field label="Voz" hint={voices.length ? undefined : 'O serviço de fala está desligado neste computador. Docker: docker compose up -d voice'}>
-        <Select aria-label="Voz" value={form.voice} disabled={!voices.length} onChange={(e) => setForm({ ...form, voice: e.target.value })} className="w-40">
-          {voices.map((v) => (
-            <option key={v} value={v}>{voiceName(v)}</option>
+        <Select aria-label="Voz" value={chosenVoice ?? ''} disabled={!offered.length} onChange={(e) => setForm({ ...form, voice: e.target.value })} className="w-40">
+          {VOICE_GROUPS[form.language].map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {Object.entries(group.voices).filter(([id]) => voices.includes(id)).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </optgroup>
           ))}
         </Select>
       </Field>
       <Field label="Língua da resposta falada" hint="Percebe sempre o que dizes em português; no ecrã a resposta fica em português">
         <Select aria-label="Língua da resposta falada" value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value as 'pt' | 'en' })} className="w-40">
-          <option value="en">Inglês (soa melhor)</option>
           <option value="pt">Português</option>
+          <option value="en">Inglês</option>
         </Select>
       </Field>
-      {voices.length > 0 && (
-        <div className="grid gap-1.5">
-          <p className="text-sm text-muted">Ouvir cada voz (não muda a escolha; uma de cada vez):</p>
-          <div className="flex flex-wrap gap-2">
-            {voices.map((v) => (
-              <Button key={v} size="sm" variant={form.voice === v ? 'primary' : 'secondary'} aria-label={`Ouvir a voz ${voiceName(v)}`}
-                disabled={testing || playing} onClick={() => void (connected && audio?.playback_available ? testAudio('tts', v) : listenHere(v))}>
-                ▶ {voiceName(v)}
-              </Button>
-            ))}
-          </div>
+      {chosenVoice && (
+        <div>
+          <Button size="sm" disabled={testing || playing} onClick={() => {
+            void (connected && audio?.playback_available ? testAudio('tts', chosenVoice) : listenHere(chosenVoice!))
+          }}>▶ Ouvir esta voz</Button>
         </div>
       )}
       <div className="grid gap-2">
@@ -167,12 +170,11 @@ function VoiceForm() {
         <div className="flex flex-wrap gap-2">
           <Button type="button" disabled={!connected || testing} onClick={() => void testAudio('meter')}>Testar microfone (5 s)</Button>
           <Button type="button" disabled={!connected || testing || !audio?.stt_available} onClick={() => void testAudio('stt')}>Testar transcrição (5 s)</Button>
-          <Button type="button" disabled={!connected || testing || !audio?.stt_available || !audio?.playback_available} onClick={() => void testAudio('tts')}>Ouvir voz de teste</Button>
         </div>
         <label className="grid gap-1 text-sm">Nível de entrada<meter aria-label="Nível de entrada do microfone" min={0} max={1} value={test.data?.level ?? 0} className="w-full" /></label>
         {test.data && <p role="status" className="text-sm text-muted">{test.data.message}</p>}
         {test.error && <ErrorNote error={test.error} onRetry={test.reload} />}
-        <p className="text-sm text-muted">O reconhecimento usa português (pt). A voz pt não garante sotaque europeu; compara as vozes por ouvido.</p>
+        <p className="text-sm text-muted">As vozes Dii e Miro são de TigreGotico Lda (CC BY-NC-ND 4.0, só para uso não comercial).</p>
         {audio?.latency && Object.keys(audio.latency).length > 0 && <p className="text-sm text-muted">Última execução: {Object.entries(audio.latency).map(([stage, ms]) => `${stage.replace('_ms', '')}: ${ms} ms`).join(' · ')}.</p>}
       </div>
       <div>

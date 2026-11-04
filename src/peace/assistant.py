@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from functools import partial
 from pathlib import PurePath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1678,6 +1678,19 @@ CONFIRM = {"improve_knowledge": "reler todos os ficheiros das cadeiras", "recove
 PC_COMMANDS = {"desktop_plan", "study_workspace", "cancel_desktop", "open_recent"}
 EXPLICIT = {"improve_knowledge", "remind", "add_task", "add_event", "change_item", "delete_item", "complete_task", "undo", "open_recent"}
 RULES_DECIDE = {"improve_knowledge", "remind", "add_task", "add_event", "change_item", "delete_item", "complete_task", "undo", "open_recent", "review", "study_time", "recover", "search_mail", "readiness", "mastery"}
+# Asked exactly like this, the command answers: going through a model adds seconds and gives the same answer.
+QUICK = re.compile(r"^(?:\S+\s+){0,4}?(o que (?:e que )?(?:tenho|tem|tens|ha)(?: marcado| para)? (?:hoje|amanha|depois de amanha|(?:n[ao] )?(?:segunda|terca|quarta|quinta|sexta|sabado|domingo))"
+                   r"|(?:que|quais(?: sao)?(?: os| as)?)(?: meus| minhas)? (?:prazos|entregas|avaliacoes)\b[^,;]*)[\s?.!]*$")
+def _quick(text: str, rule: str, today: date) -> tuple[str, dict[str, Any]] | None:
+    """The command for a plain question. Speech recognition garbles a name at the start («Está visto o que tenho amanhã»), so a
+    few words before the question do not count. shortcut: those words are ignored, unless they ask for an action (EXPLICIT)."""
+    found = QUICK.search(_fold(text).strip())
+    if not found or rule in EXPLICIT:
+        return None
+    command = match_rules(found[1], today)
+    return command if command[0] in ("day", "deadlines") else None
+
+
 FOLLOW_UP = re.compile(r"^(e|entao|depois)\b|\b(isso|isto|esse|essa|este|esta|ele|ela|aquele|aquela|a seguir|outra vez|tambem|mesmo|mesma)\b")
 YES = re.compile(r"^(sim|confirmo|confirma|ok|pode ser|faz isso|claro)\b(?!.*\b(mas|nao|espera)\b)")
 CONFIRM_FOR = timedelta(minutes=2)
@@ -1701,6 +1714,8 @@ def _decide(session: Session, text: str, today: date, now: datetime) -> tuple[st
     if _asked_about(session, now, text):  # a question naming one of the student's own tasks or events
         return "item_info", {"text": text}, "rules"
     rules = match_rules(text, today)
+    if quick := _quick(text, rules[0], today):
+        return *quick, "rules"
     history = list(session.scalars(select(AssistantMessage).order_by(AssistantMessage.id.desc()).limit(6)))[::-1]
     if llm.route("chat") and llm_reachable():
         # Said with an explicit verb, and the date parser is better at it than a model. "Marca" alone may mean many things.
@@ -1775,9 +1790,9 @@ def ask(session: Session, text: str, source: str, now: datetime) -> dict[str, An
         reply = INTERNAL[name](session, now, **args)
     else:
         reply = COMMANDS[name][0](session, now, **args)
-    if reply.intent == "help" and llm_reachable():
+    if reply.intent == "help" and name != "greet" and llm_reachable():
         reply.text = chat(session, text, history) or reply.text
-    elif name in REPHRASE and llm_reachable() and not llm.route("chat"):  # rewording alone is no reason to send a schedule away
+    elif name in REPHRASE and source != "voice" and llm_reachable() and not llm.route("chat"):  # a spoken answer must not wait for rewording  # rewording alone is no reason to send a schedule away
         reply.text = rephrase(reply.text) or reply.text
     reply.text = named(reply.text, me)
     if files := [{"title": i["title"], "vault_path": i["vault_path"]} for i in reply.items if i.get("vault_path")][:5]:
@@ -1837,7 +1852,7 @@ class AudioCapabilities(s.In):
     playback_available: bool = False
     stt_available: bool = False
     stt_gpu: bool | None = None  # None: no separate GPU server configured
-    latency: dict[str, int] = Field(default_factory=dict, max_length=10)
+    latency: dict[str, int | Annotated[str, Field(max_length=20)]] = Field(default_factory=dict, max_length=10)  # ms, and which engine heard
 
 
 class ActionCapabilities(s.In):

@@ -135,7 +135,7 @@ export function Layout() {
 
 /** On other pages too: you can see when PEACE is hearing you. The main page shows it under the orb. */
 function PageVoiceCue() {
-  const status = useApi(() => api.assistantStatus(), [], 2_000)
+  const status = useApi(() => api.assistantStatus(), [], 1_000)
   const state = status.data?.state ?? 'idle'
   return state === 'idle' ? null : <div className="fixed top-4 left-1/2 z-40 -translate-x-1/2"><VoiceCue state={state} /></div>
 }

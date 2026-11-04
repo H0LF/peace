@@ -219,8 +219,8 @@ def _report(path: str, value: float) -> None:
 
 def capabilities() -> dict:
     d = core.voice_diagnostics
-    engine = core._up(core.VOICESTUDIO + "/health")
-    d["stt_available"] = hearing = engine if core.STT_URL == core.VOICESTUDIO else core._up(core.STT_URL + "/health")
+    engine = core._up(core.VOICE_SERVICE + "/health")
+    d["stt_available"] = hearing = engine if core.STT_URL == core.VOICE_SERVICE else core._up(core.STT_URL + "/health")
     d["capture_available"] = bool(d["inputs"])
     d["playback_available"] = bool(d["outputs"])
     d["ptt_bound"] = user32 is not None
@@ -228,7 +228,7 @@ def capabilities() -> dict:
     speaking = core.TTS != "off" and core.settings["speak"]
     name = ("STT pt" + (f" · {core.settings['voice']}" if speaking else ", respostas escritas")) if voice else None
     return {"voice": voice, "voice_name": name, "ptt": core.settings["ptt"].replace(" ", ""),
-            "llm": core._up(core.OLLAMA + "/api/tags"), "voices": core.VOICES.get(core.TTS, []) if engine else [],
+            "llm": core._up(core.OLLAMA + "/api/tags"), "voices": core.VOICES if core.TTS != "off" and engine else [],
             "audio": d, "actions": core.actions.availability(), "vaults": core.actions.obsidian_vaults(),
             "vault": core.vault_info()}
 

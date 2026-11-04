@@ -81,7 +81,7 @@ $VramGB = [math]::Round($Vram / 1GB, 1)
 $RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
 $FreeGB = [math]::Round((Get-PSDrive $env:SystemDrive.TrimEnd(':')).Free / 1GB, 1)
 $Threads = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
-$Stt = if ($Threads -ge 12) { 'medium' } else { 'small' }
+$Stt = 'small'  # "medium" hears little better and answers twice as slowly
 
 $ModelFile = Join-Path $PeaceHome 'model.txt'
 if (Test-Path $ModelFile) {
@@ -220,7 +220,7 @@ if ($LASTEXITCODE -ne 0) { Fail 'Não foi possível instalar o agente do PC (Pyt
 $DesktopEnv = Join-Path $PeaceHome 'desktop.env'
 if (-not (Test-Path $DesktopEnv)) {
     Write-TextFile $DesktopEnv @('PEACE_URL=http://127.0.0.1:8420', "PEACE_TOKEN=$Token", 'PEACE_PTT=SUPER + Y',
-                               'PEACE_TTS=supertonic3', 'PEACE_TTS_VOICE=F1')
+                               'PEACE_TTS=piper', 'PEACE_TTS_VOICE=tugao')
 }
 $Startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'PEACE.lnk'
 $link = (New-Object -ComObject WScript.Shell).CreateShortcut($Startup)

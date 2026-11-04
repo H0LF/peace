@@ -200,7 +200,7 @@ def test_appearance_preferences_validate_and_persist(client):
 
 
 def test_voice_preferences_only_accept_a_safe_key_combo(client):
-    assert client.get("/api/v1/preferences/voice").json() == {"ptt": "SUPER + Y", "speak": True, "voice": "F1", "language": "en", "input_device": "", "output_device": ""}
+    assert client.get("/api/v1/preferences/voice").json() == {"ptt": "SUPER + Y", "speak": True, "voice": "tugao", "language": "pt", "input_device": "", "output_device": ""}
     assert client.put("/api/v1/preferences/voice", json={"ptt": "SUPER + SHIFT + D", "speak": False, "voice": "F3"}).status_code == 200
     assert client.get("/api/v1/preferences/voice").json()["ptt"] == "SUPER + SHIFT + D"
     injection = 'SUPER + Y")) os.execute("rm'

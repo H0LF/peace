@@ -554,8 +554,8 @@ class VoicePrefs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ptt: str = Field("SUPER + Y", pattern=PTT_PATTERN)
     speak: bool = True  # spoken replies; off = notifications only
-    voice: str = Field("F1", pattern=r"^[A-Za-z0-9_-]{1,40}$")
-    language: Literal["pt", "en"] = "en"  # spoken replies; the speech engine sounds far better in English
+    voice: str = Field("tugao", pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    language: Literal["pt", "en"] = "pt"  # spoken replies
     input_device: str = Field("", pattern=r"^(?:[A-Za-z0-9_][A-Za-z0-9_.:@/-]{0,199})?$")
     output_device: str = Field("", pattern=r"^(?:[A-Za-z0-9_][A-Za-z0-9_.:@/-]{0,199})?$")
 

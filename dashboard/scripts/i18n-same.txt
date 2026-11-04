@@ -55,3 +55,6 @@ translate3d(-70%, 0, 120px) rotateY(32deg)
 translate3d(0, 60px, -220px) scale(0.8)
 translate3d(0, {0}px, {1}px)
 xMidYMid slice
+Tugão
+Dii
+Miro

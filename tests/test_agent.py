@@ -66,7 +66,7 @@ def test_a_plain_request_is_answered_by_the_command_with_nothing_sent_away(sessi
     script, seen = model
     monkeypatch.setitem(assistant.COMMANDS, "day", (lambda s, n, offset=0: assistant.Reply("Amanhã tens BD às 09:00.", "day"), {"offset": {"type": "integer"}}))
     script += [{"tool_calls": [call("day", offset=1)]}]
-    assert ask(session, "o que tenho amanhã?")["reply"] == "Amanhã tens BD às 09:00." and len(seen) == 1
+    assert ask(session, "o que tenho amanhã?")["reply"] == "Amanhã tens BD às 09:00." and not seen  # no model, so also no wait
 
 
 def test_after_reading_an_action_needs_the_students_yes(session, model, monkeypatch):

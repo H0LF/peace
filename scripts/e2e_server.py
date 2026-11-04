@@ -44,6 +44,7 @@ now = datetime.now(UTC)
 tz = ZoneInfo("Europe/Lisbon")
 local = now.astimezone(tz)
 end_of_today = datetime.combine(local.date(), time(23, 30), tz)
+class_at = min(now + timedelta(hours=1), max(end_of_today, now + timedelta(minutes=1)))  # still today, late at night too
 with Session(get_engine()) as s:
     redes = Course(name="Redes de Computadores", code="1001", class_groups="P1, T1", source="inforestudante", external_id="1001")
     bd = Course(name="Bases de Dados", code="1002", source="inforestudante", external_id="1002",
@@ -56,7 +57,7 @@ with Session(get_engine()) as s:
         Task(title="Projeto final de BD", course_id=bd.id, kind="assignment", due_at=now + timedelta(days=5), estimated_minutes=300,
              source="moodle", external_id="assign:1", url="https://moodle.example.pt/moodle/mod/assign/view.php?id=1"),
         Task(title="Ler artigo sobre TCP", course_id=redes.id, priority=1),
-        Event(title="RC (P1)", kind="class", course_id=redes.id, starts_at=now + timedelta(hours=1), ends_at=now + timedelta(hours=2),
+        Event(title="RC (P1)", kind="class", course_id=redes.id, starts_at=class_at, ends_at=class_at + timedelta(hours=1),
               location="L2.1", source="inforestudante", external_id="aulas:1"),
         Event(title="BD (Teste 1)", kind="exam", course_id=bd.id, starts_at=now + timedelta(days=2), ends_at=now + timedelta(days=2, hours=2),
               source="inforestudante", external_id="avaliacoes:1"),
@@ -145,6 +146,8 @@ with Session(get_engine()) as s:
                    content=BRIEF, modified_at=now - timedelta(days=3), source="moodle", external_id="file:projeto",
                    terms=term_frequencies("projeto final projeto final BD NIF cliente entrega relatório")))
     s.commit()
+from peace import speech  # noqa: E402
+speech.engine_voices = lambda: []  # no speech service here, whatever this machine runs on port 3900
 requirements.llm_reachable = lambda: True
 requirements.ask_json = lambda system, user, schema, timeout=180: {"items": [
     {"kind": "functional", "text": "Validar o NIF de cada cliente", "quote": "O programa deve validar o NIF de cada cliente."},

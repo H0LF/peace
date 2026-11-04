@@ -124,7 +124,7 @@ export default function Cockpit() {
   const today = useApi(() => api.today(), [])
   const work = useApi(() => api.workload(), [], 120_000)
   const waiting = useApi(() => api.proposals(), [], 120_000)
-  const status = useApi(() => api.assistantStatus(), [], 2_000)
+  const status = useApi(() => api.assistantStatus(), [], 1_000)
   const appearance = useApi(() => api.appearance(), [], 0)
   const [text, setText] = useState('')
   const [all, setAll] = useState(false)

@@ -118,7 +118,7 @@ Em **Definições → IA e modelos** podes usar o modelo deste PC ou ligar a **O
 chave de API; o modelo muda-se depois no canto do Início, ou a falar («muda para o GPT», «qual é o teu cérebro?», «volta
 ao modelo anterior»). A chave confirma-se antes de ser guardada, nunca é mostrada de volta e fica no porta-chaves do
 sistema ou, onde não houver (Docker), num ficheiro encriptado. Pagas ao fornecedor: uma subscrição do ChatGPT Plus ou Pro
-não inclui crédito de API, mas podes entrar com ela diretamente, sem chave, e usá-la como fornecedor. Em **Definições → Privacidade e dados** decides o que pode sair do PC: a conversa e os documentos
+não inclui crédito de API, mas podes entrar com ela diretamente, sem chave, e usá-la como fornecedor. Atenção: esta ligação não é oficial da OpenAI, pode deixar de funcionar a qualquer momento e usas a tua conta por tua conta e risco. Em **Definições → Privacidade e dados** decides o que pode sair do PC: a conversa e os documentos
 que pedes vão por omissão; a leitura automática e o email só se os ligares.
 
 ### Privacidade
@@ -148,9 +148,9 @@ calendário, o guia ou o teu progresso mudam. Para o ver no Google Calendar, lig
 
 - **Modelo local** ([Ollama](https://ollama.com)): `ollama pull gpt-oss:20b` (precisa de uma GPU com ~16 GB).
   Sem modelo, o assistente percebe os pedidos por palavras-chave e responde com frases fixas.
-- **Voz**: já vem incluída no Windows, no Mac e na alternativa Docker (serviço `voice`: Whisper para ouvir, Supertonic para
-  falar, tudo no teu PC). Em Definições → Voz ouves e escolhes as vozes, mesmo sem o agente do PC. No Linux: `uv sync --extra voice` e `uv run peace-voice` (ou o [VoiceStudio](https://github.com/debpalash/VoiceStudio)
-  em `127.0.0.1:3900`). O atalho de voz (SUPER+Y) muda-se em Definições → Voz.
+- **Voz**: já vem incluída no Windows, no Mac e na alternativa Docker (serviço `voice`: Whisper para ouvir, Piper para
+  falar em português europeu, tudo no CPU do teu PC, sem usar a GPU). Em Definições → Voz ouves e escolhes as vozes, mesmo sem o agente do PC. No Linux: `uv sync --extra voice` e `uv run peace-voice`. Vozes: Tugão (masculina, dados CC0), e Miro (masculina) e Dii (feminina), estas de TigreGotico Lda, CC BY-NC-ND 4.0, só para uso não
+  comercial. Em inglês: LJSpeech, Cori, Joe e Mike (domínio público ou CC0). Descarregam-se uma vez. O `piper-tts` é GPL-3.0; o resto da PEACE é MIT. O atalho de voz (SUPER+Y) muda-se em Definições → Voz.
 - **Decisões com o [Laya](https://huggingface.co/convaiinnovations/laya)** (experimental): `scripts/install-laya.sh`
   (Linux, ~2 GB, corre no CPU). Responde a escolhas, pontuações e sim/não em `POST /api/v1/decide`. Sem treino acerta
   pouco, por isso nenhuma função da PEACE depende dele.

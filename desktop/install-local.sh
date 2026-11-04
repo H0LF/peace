@@ -32,7 +32,7 @@ api_token=$(grep -m1 '^PEACE_API_TOKEN=' "$conf/peace.env" | cut -d= -f2-)
 if [ ! -s "$conf/desktop.env" ]; then
   printf 'PEACE_URL=http://127.0.0.1:8420\nPEACE_TOKEN=%s\n' "$api_token" > "$conf/desktop.env"
 fi
-for setting in 'PEACE_PTT=SUPER + Y' 'PEACE_TTS=supertonic3' 'PEACE_TTS_VOICE=F1'; do
+for setting in 'PEACE_PTT=SUPER + Y' 'PEACE_TTS=piper' 'PEACE_TTS_VOICE=tugao'; do
   grep -q "^${setting%%=*}=" "$conf/desktop.env" || printf '%s\n' "$setting" >> "$conf/desktop.env"
 done
 chmod 600 "$conf/desktop.env"

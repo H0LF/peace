@@ -79,12 +79,14 @@ test('hand entries: empty, backwards, future and twice are all refused with a re
 })
 
 test('a session started from the plan; another one cannot start on top; finishing marks it done', async ({ page }) => {
+  const clock = new Date()
+  test.skip(clock.getHours() === 23 && clock.getMinutes() >= 30, 'its sessions would fall on tomorrow')
   await login(page)
   const tasks = await (await page.request.get('/api/v1/tasks?q=artigo', { headers: AUTH })).json()
   const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString()
   const make = async (from: number, to: number) =>
     (await (await page.request.post('/api/v1/sessions', { headers: AUTH, data: { task_id: tasks[0].id, starts_at: at(from), ends_at: at(to) } })).json()).id
-  const ids = [await make(1, 31), await make(40, 70)]
+  const ids = [await make(1, 11), await make(12, 22)] // close together: both still today late at night
   try {
     await page.goto('/estudo')
     const rows = page.locator('li').filter({ hasText: 'Ler artigo sobre TCP' }).filter({ has: page.getByRole('button', { name: 'Começar' }) })

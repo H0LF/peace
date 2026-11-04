@@ -72,8 +72,8 @@ def test_sessions_with_only_a_break_between_them_are_one_block():
 
 
 def test_voices_are_listed_without_a_desktop_agent(client, monkeypatch):
-    monkeypatch.setattr(speech, "engine_voices", lambda: ["F1", "F2"])
-    assert client.get("/api/v1/assistant/status").json()["voice"]["voices"] == ["F1", "F2"]
+    monkeypatch.setattr(speech, "engine_voices", lambda: ["tugao", "dii"])
+    assert client.get("/api/v1/assistant/status").json()["voice"]["voices"] == ["tugao", "dii"]
 
 
 def test_no_speech_service_means_no_voices(monkeypatch):
@@ -93,11 +93,86 @@ def test_hearing_a_voice_in_settings_works_when_spoken_replies_are_off(client, m
     prefs = client.get("/api/v1/preferences/voice").json()
     client.put("/api/v1/preferences/voice", json=prefs | {"speak": False})
     assert client.post("/api/v1/voice/say", json={"text": "olá"}).status_code == 204
-    r = client.post("/api/v1/voice/say", json={"text": "olá", "voice": "F3"})
-    assert r.status_code == 200 and sent["voice"] == "F3"
+    r = client.post("/api/v1/voice/say", json={"text": "olá", "voice": "dii"})
+    assert r.status_code == 200 and sent["voice"] == "dii"
     assert client.post("/api/v1/voice/say", json={"text": "olá", "voice": "../x"}).status_code == 422
 
 
 def test_every_response_carries_the_security_headers(client):
     r = client.get("/health")
     assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+@pytest.mark.parametrize("said, command", [
+    ("PEACE, o que tenho amanhã?", "day"), ("Você viu isso? O que tem amanhã?", "day"), ("Está visto o que tenho amanhã.", "day"), ("o que tenho hoje?", "day"), ("O que é que tenho na sexta?", "day"),
+    ("quais são os meus prazos?", "deadlines"), ("que entregas tenho esta semana?", "deadlines"),
+])
+def test_plain_questions_are_answered_without_waiting_for_a_model(client, monkeypatch, said, command):
+    monkeypatch.setattr(assistant.llm, "route", lambda *a: ("openai", "gpt-6"))
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: True)
+    monkeypatch.setattr(assistant, "agent", lambda *a: pytest.fail("asked the model"))
+    assert client.post("/api/v1/assistant/ask", json={"text": said, "source": "voice"}).json()["via"] == "rules"
+
+
+@pytest.mark.parametrize("said", ["o que tenho de fazer para o projeto amanhã?", "que tempo vai estar hoje?", "o que há de novo no mundo hoje?", "diz-me uma coisa muito importante sobre isto, o que tenho hoje?"])
+def test_anything_else_still_goes_to_the_model(client, monkeypatch, said):
+    asked = []
+    monkeypatch.setattr(assistant.llm, "route", lambda *a: ("openai", "gpt-6"))
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: True)
+    monkeypatch.setattr(assistant, "agent", lambda *a: asked.append(a) or assistant.Reply("ok", "agent"))
+    client.post("/api/v1/assistant/ask", json={"text": said, "source": "voice"})
+    assert asked
+
+
+def test_a_greeting_does_not_wait_for_a_model(client, monkeypatch):
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: True)
+    monkeypatch.setattr(assistant, "chat", lambda *a: pytest.fail("asked the model"))
+    assert client.post("/api/v1/assistant/ask", json={"text": "PEACE", "source": "voice"}).json()["intent"] == "help"
+
+
+def test_an_action_before_the_question_is_not_ignored(client, monkeypatch):
+    monkeypatch.setattr(assistant, "COMMANDS", assistant.COMMANDS | {"day": (lambda *a, **k: pytest.fail("read instead of acting"), {})})
+    assert client.post("/api/v1/assistant/ask", json={"text": "apaga o que tenho hoje", "source": "voice"}).status_code == 200
+
+
+def test_english_replies_are_translated_and_fall_back_to_portuguese(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(speech.httpx, "post", lambda url, json, timeout: sent.append(json) or SimpleNamespace(raise_for_status=lambda: None, content=b"RIFF"))
+    prefs = client.get("/api/v1/preferences/voice").json()
+    client.put("/api/v1/preferences/voice", json=prefs | {"language": "en", "voice": "joe"})
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: True)
+    monkeypatch.setattr(assistant, "_say", lambda m: "You have a class.")
+    client.post("/api/v1/voice/say", json={"text": "Tens uma aula."})
+    assert (sent[-1]["input"], sent[-1]["language"], sent[-1]["voice"]) == ("You have a class.", "en", "joe")
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: False)
+    client.post("/api/v1/voice/say", json={"text": "Tens uma aula."})
+    assert (sent[-1]["input"], sent[-1]["language"]) == ("Tens uma aula.", "pt")
+    client.post("/api/v1/voice/say", json={"text": "Hello", "voice": "cori"})
+    assert (sent[-1]["language"], sent[-1]["voice"]) == ("en", "cori")
+
+
+def test_a_reply_from_an_email_is_not_sent_to_the_cloud_to_be_translated(client, session, monkeypatch):
+    from peace.models import AssistantMessage
+    monkeypatch.setattr(assistant, "llm_reachable", lambda *a: True)
+    monkeypatch.setattr(assistant, "_say", lambda m: "translated")
+    monkeypatch.setattr(assistant.llm, "route", lambda purpose="chat": ("openai", "gpt-6") if purpose == "chat" else None)  # mail stays here
+    session.add(AssistantMessage(role="assistant", content="O João escreveu-te.", intent="search_mail"))
+    session.commit()
+    assert client.post("/api/v1/voice/english", json={"text": "O João escreveu-te."}).json()["text"] is None
+    session.add(AssistantMessage(role="assistant", content="Olá.", intent="help"))
+    session.commit()
+    assert client.post("/api/v1/voice/english", json={"text": "Olá."}).json()["text"] == "translated"
+
+
+def test_the_heartbeat_accepts_what_a_voice_turn_reports(client):
+    capabilities = {"audio": {"latency": {"stt_ms": 140, "stt_engine": "gpu", "tts_ms": 60}}}
+    assert client.post("/api/v1/desktop/heartbeat", json={"capabilities": capabilities}).status_code < 300
+
+
+
+def test_a_new_install_starts_with_nothing_connected_and_nobody_in_it(client):
+    ai = client.get("/api/v1/ai").json()
+    assert ai["active"]["provider"] in ("", None)
+    assert not [p for p in ai["providers"] if p.get("connected") or p.get("has_key")]
+    appearance = client.get("/api/v1/preferences/appearance").json()
+    assert appearance["name"] == "" and appearance["assistant_name"] == "PEACE"

@@ -64,7 +64,7 @@ services:
       target: voice
     restart: unless-stopped
     environment:
-      PEACE_STT_MODEL: ${PEACE_STT_MODEL:-small}  # the installer picks "medium" on faster PCs
+      PEACE_STT_MODEL: ${PEACE_STT_MODEL:-small}  # "medium" hears little better and is twice as slow
       HF_HOME: /home/peace/.cache/huggingface
     volumes:
       - voicemodels:/home/peace/.cache/huggingface

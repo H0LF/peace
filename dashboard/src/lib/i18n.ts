@@ -4,7 +4,7 @@
 // rather than breaking: scripts/i18n-extract.mjs and its test list what is missing. See ADR-027.
 import { language } from './ui'
 
-const ATTRIBUTES = ['title', 'aria-label', 'placeholder', 'alt']
+const ATTRIBUTES = ['title', 'aria-label', 'placeholder', 'alt', 'label']
 const SKIP = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'])
 
 type Pattern = [RegExp, string]

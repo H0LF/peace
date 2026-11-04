@@ -193,14 +193,14 @@ def test_voice_settings_from_the_dashboard_are_validated_and_applied(monkeypatch
     runs = []
     monkeypatch.setattr(agent.subprocess, "run", lambda args, **kw: runs.append(args) or type("R", (), {"stdout": "ok"})())
     monkeypatch.setitem(agent.settings, "ptt", "SUPER + Y")
-    monkeypatch.setattr(agent, "TTS", "supertonic3")
-    agent.apply_voice_settings({"ptt": 'SUPER + Y")) os.execute("x', "speak": False, "voice": "F3"})
+    monkeypatch.setattr(agent, "TTS", "piper")
+    agent.apply_voice_settings({"ptt": 'SUPER + Y")) os.execute("x', "speak": False, "voice": "dii"})
     assert runs == [] and agent.settings["ptt"] == "SUPER + Y"  # never reaches hyprctl
-    assert agent.settings["speak"] is False and agent.settings["voice"] == "F3"
+    assert agent.settings["speak"] is False and agent.settings["voice"] == "dii"
     agent.apply_voice_settings({"ptt": "SUPER + SHIFT + D", "speak": True, "voice": "bad voice!"})
-    assert agent.settings["ptt"] == "SUPER + SHIFT + D" and agent.settings["voice"] == "F3"
+    assert agent.settings["ptt"] == "SUPER + SHIFT + D" and agent.settings["voice"] == "dii"
     agent.apply_voice_settings({"voice": "M1", "language": "pt"})  # female voices only
-    assert agent.settings["voice"] == "F3" and agent.settings["language"] == "pt"
+    assert agent.settings["voice"] == "dii" and agent.settings["language"] == "pt"
     agent.apply_voice_settings({"language": "fr"})
     assert agent.settings["language"] == "pt"
     monkeypatch.setitem(agent.settings, "language", "en")
@@ -324,7 +324,7 @@ def test_capture_start_failure_is_reported_and_old_audio_is_removed(monkeypatch)
 def test_unsaved_diagnostic_does_not_rebind_or_change_live_settings(monkeypatch):
     before = dict(agent.settings)
     spoken = []
-    monkeypatch.setattr(agent, 'TTS', 'supertonic3')
+    monkeypatch.setattr(agent, 'TTS', 'piper')
     monkeypatch.setattr(agent, 'speak', lambda text, **kw: spoken.append(kw))
     monkeypatch.setattr(agent, 'call', lambda *a: None)
     monkeypatch.setattr(agent, 'set_state', lambda s: None)
@@ -454,24 +454,26 @@ def test_spoken_replies_are_translated_to_english_or_fall_back_to_portuguese(mon
         def __exit__(self, *a): return False
 
     def urlopen(request, timeout):
-        if request.full_url.endswith("/api/chat"):
-            if translate_fails:
-                raise agent.urllib.error.URLError("model down")
-            return Reply(b'{"message": {"content": "You have an exam at 5 pm."}}')
         sent.append(agent.json.loads(request.data))
         return Reply(b"RIFF")
 
+    def call(method, path, body=None):
+        assert path == "/api/v1/voice/english"
+        if translate_fails:
+            raise agent.urllib.error.URLError("server down")
+        return {"text": answer}
+
+    monkeypatch.setattr(agent, "call", call)
     monkeypatch.setattr(agent.urllib.request, "urlopen", urlopen)
     monkeypatch.setattr(agent.subprocess, "run", lambda *a, **k: None)
     monkeypatch.setattr(agent, "set_state", lambda s: None)
     monkeypatch.setattr(agent, "RUNTIME", tmp_path)
     monkeypatch.setitem(agent.settings, "language", "en")
-    monkeypatch.setattr(agent, "model_allowed", lambda: allowed)
-    allowed, translate_fails = True, False
+    answer, translate_fails = "You have an exam at 5 pm.", False
     agent.speak("Tens um exame às 17:00.")
     translate_fails = True
     agent.speak("Tens um exame às 17:00.")
-    allowed, translate_fails = False, False  # a game holds the memory: no model load just to translate
+    answer, translate_fails = None, False  # the server has no model free, a game holding the memory say
     agent.speak("Tens um exame às 17:00.")
     assert [(b["input"], b["language"]) for b in sent] == [("You have an exam at 5 pm.", "en"), ("Tens um exame às 17 horas.", "pt"),
                                                          ("Tens um exame às 17 horas.", "pt")]
@@ -558,12 +560,12 @@ def test_speech_recognition_falls_back_to_the_cpu_when_the_gpu_server_fails(monk
         return Reply()
 
     monkeypatch.setattr(agent, "STT_URL", "http://gpu:3910")
-    monkeypatch.setattr(agent, "VOICESTUDIO", "http://cpu:3900")
+    monkeypatch.setattr(agent, "VOICE_SERVICE", "http://cpu:3900")
     monkeypatch.setattr(agent.urllib.request, "urlopen", urlopen)
     monkeypatch.setattr(agent, "voice_diagnostics", {"latency": {}})
     assert agent.transcribe(wav) == "adiciona uma reuniao"
     assert asked == ["http://gpu:3910/v1/audio/transcriptions", "http://cpu:3900/v1/audio/transcriptions"]
-    assert agent.voice_diagnostics["latency"]["stt_engine"] == "voicestudio"
+    assert agent.voice_diagnostics["latency"]["stt_engine"] == "cpu"
     monkeypatch.setattr(agent.urllib.request, "urlopen", lambda r, timeout: (_ for _ in ()).throw(agent.urllib.error.URLError("down")))
     with pytest.raises(agent.urllib.error.URLError):
         agent.transcribe(wav)  # both down: the turn reports it (never a made-up transcript)
@@ -575,3 +577,28 @@ def test_warming_asks_the_server_first(monkeypatch):
     monkeypatch.setattr(agent.urllib.request, "urlopen", lambda *a, **k: opened.append(a))
     agent.warm_model()
     assert opened == []
+
+
+def test_the_desktop_says_what_the_shortcut_is_doing_in_one_notification(monkeypatch):
+    runs = []
+
+    def run(args, **kw):
+        runs.append(args)
+        return type("R", (), {"stdout": "42\n"})()
+
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent, "notice_id", "")
+    for state in ("listening", "thinking", "speaking", "idle"):
+        agent.voice_notice(state)
+    assert "-r" not in runs[0] and "A ouvir-te…" in runs[0]
+    assert runs[1][runs[1].index("-r") + 1] == "42" and "A pensar…" in runs[1]
+    assert runs[2][runs[2].index("-t") + 1] == "1" and agent.notice_id == ""  # gone once she speaks
+    assert len(runs) == 3  # idle after that: nothing left to close
+
+
+def test_no_notification_service_does_not_stop_a_voice_turn(monkeypatch):
+    monkeypatch.setattr(agent.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(agent, "notice_id", "")
+    agent.voice_notice("listening")
+    assert agent.notice_id == ""
+

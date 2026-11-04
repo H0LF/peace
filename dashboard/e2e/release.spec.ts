@@ -53,7 +53,7 @@ test('settings: voices appear without a desktop agent and play in the browser', 
   let asked = ''
   await page.route('**/api/v1/assistant/status', async (route) => {
     const real = await (await route.fetch()).json()
-    await route.fulfill({ json: { ...real, desktop: { ...real.desktop, connected: false }, voice: { ...real.voice, voices: ['F1', 'F2'] } } })
+    await route.fulfill({ json: { ...real, desktop: { ...real.desktop, connected: false }, voice: { ...real.voice, voices: ['tugao', 'miro', 'dii', 'ljspeech', 'cori', 'joe', 'mike'] } } })
   })
   await page.route('**/api/v1/voice/say', (route) => {
     asked = route.request().postDataJSON().voice
@@ -63,8 +63,17 @@ test('settings: voices appear without a desktop agent and play in the browser', 
   const tab = page.getByRole('tab', { name: 'Voz' })
   if (await tab.count()) await tab.click()
   await expect(page.getByLabel('Voz', { exact: true })).toBeEnabled()
-  await page.getByRole('button', { name: 'Ouvir a voz Voz 2' }).click()
-  await expect.poll(() => asked).toBe('F2')
+  const voice = page.getByRole('combobox', { name: 'Voz', exact: true })
+  await page.getByLabel('Língua da resposta falada').selectOption('pt') // an earlier test may have saved English
+  await expect(voice.locator('optgroup[label="Femininas"] option')).toHaveText(['Dii'])
+  await expect(voice.locator('optgroup[label="Masculinas"] option')).toHaveText(['Tugão', 'Miro'])
+  await page.getByLabel('Língua da resposta falada').selectOption('en')
+  await expect(voice.locator('optgroup[label="Femininas"] option')).toHaveText(['LJSpeech (EUA)', 'Cori (Reino Unido)'])
+  await expect(voice.locator('optgroup[label="Masculinas"] option')).toHaveText(['Joe (EUA)', 'Mike (EUA)'])
+  await page.getByLabel('Língua da resposta falada').selectOption('pt')
+  await voice.selectOption('dii')
+  await page.getByRole('button', { name: /Ouvir esta voz/ }).click()
+  await expect.poll(() => asked).toBe('dii')
 })
 
 test('the assistant name replaces PEACE on screen and goes back', async ({ page }) => {
@@ -80,3 +89,19 @@ test('the assistant name replaces PEACE on screen and goes back', async ({ page 
     await page.evaluate(() => localStorage.removeItem('peace-assistant-name'))
   }
 })
+
+test('a turn started with the shortcut shows on any page, within a second or so', async ({ page }) => {
+  await login(page)
+  let state = 'idle'
+  await page.route('**/api/v1/assistant/status', async (route) => {
+    const real = await (await route.fetch()).json()
+    await route.fulfill({ json: { ...real, state } })
+  })
+  await page.goto('/tarefas')
+  await expect(page.getByRole('status').filter({ hasText: 'A ouvir-te' })).toHaveCount(0)
+  state = 'listening'
+  await expect(page.getByRole('status').filter({ hasText: 'A ouvir-te' })).toBeVisible({ timeout: 1500 })
+  state = 'thinking'
+  await expect(page.getByRole('status').filter({ hasText: 'A pensar' })).toBeVisible({ timeout: 1500 })
+})
+

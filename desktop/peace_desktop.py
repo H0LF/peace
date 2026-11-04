@@ -349,22 +349,22 @@ def report_notification_delivery(**values) -> None:
 
 # --- voice: hold the key, speak, release ---------------------------------------------------------
 # Hyprland calls this script ("ptt start" on press, "ptt stop" on release); those calls reach the running
-# agent over a Unix socket. Speech is turned into text by VoiceStudio (local Whisper), PEACE answers, and
+# agent over a Unix socket. Speech is turned into text by PEACE's speech service (local Whisper), PEACE answers, and
 # the reply is spoken (when a fast enough voice is configured) or shown as a notification.
 
-VOICESTUDIO = os.environ.get("PEACE_VOICESTUDIO", "http://127.0.0.1:3900").rstrip("/")
+VOICE_SERVICE = os.environ.get("PEACE_VOICE_URL", "http://127.0.0.1:3900").rstrip("/")
 # Hearing can be its own server, e.g. whisper.cpp on the GPU (peace-stt.service, ~150 ms instead of ~2.5 s).
-STT_URL = os.environ.get("PEACE_STT_URL", VOICESTUDIO).rstrip("/")
+STT_URL = os.environ.get("PEACE_STT_URL", VOICE_SERVICE).rstrip("/")
 OLLAMA = os.environ.get("PEACE_OLLAMA", "http://127.0.0.1:11434").rstrip("/")
 LLM_MODEL = os.environ.get("PEACE_LLM_MODEL", "gpt-oss:20b")  # until the server says which model it uses
 PTT = os.environ.get("PEACE_PTT", "SUPER + Y")  # Hyprland key combo, as written in hyprland.lua
-TTS = os.environ.get("PEACE_TTS", "off")  # a VoiceStudio speech engine id (supertonic3), or "off": notifications
-TTS_VOICE = os.environ.get("PEACE_TTS_VOICE", "F1")  # Supertonic's F1..F5
-VOICES = {"supertonic3": [f"F{i}" for i in range(1, 6)]}  # per engine, for the Settings picker; female voices only
+TTS = os.environ.get("PEACE_TTS", "off")  # "piper", or "off": notifications
+TTS_VOICE = os.environ.get("PEACE_TTS_VOICE", "tugao")
+VOICES = ["tugao", "miro", "dii", "ljspeech", "cori", "joe", "mike"]  # for the Settings picker
 PTT_RE = re.compile(r"^(SUPER|ALT|CTRL|SHIFT)( \+ (SUPER|ALT|CTRL|SHIFT))* \+ [A-Z0-9]$")  # it ends up in Lua code
 # Live voice settings: env values until the server's Settings say otherwise (applied on every heartbeat).
 DEVICE_RE = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9_.:@/-]{0,199})?$")
-settings = {"ptt": PTT, "speak": TTS != "off", "voice": TTS_VOICE, "language": "en", "model": LLM_MODEL,
+settings = {"ptt": PTT, "speak": TTS != "off", "voice": TTS_VOICE, "language": "pt", "model": LLM_MODEL,
             "input_device": os.environ.get("PEACE_INPUT_DEVICE", ""), "output_device": os.environ.get("PEACE_OUTPUT_DEVICE", "")}
 # Private per-user directory only; never a guessable path in /tmp (voice is off without it).
 RUNTIME = Path(os.environ["XDG_RUNTIME_DIR"]) if os.environ.get("XDG_RUNTIME_DIR") else None
@@ -416,8 +416,8 @@ def _up(url: str) -> bool:
 
 def capabilities() -> dict:
     """What this desktop can really do right now (the dashboard shows exactly this)."""
-    engine = _up(VOICESTUDIO + "/health")  # speaking
-    gpu_stt = None if STT_URL == VOICESTUDIO else _up(STT_URL + "/health")
+    engine = _up(VOICE_SERVICE + "/health")  # speaking
+    gpu_stt = None if STT_URL == VOICE_SERVICE else _up(STT_URL + "/health")
     voice_diagnostics["stt_gpu"] = gpu_stt  # None: no separate GPU server configured
     voice_diagnostics["stt_available"] = hearing = bool(gpu_stt or engine)  # the CPU takes over when the GPU server is down
     voice_diagnostics["capture_available"] = bool(RUNTIME and shutil.which("pw-record") and voice_diagnostics["inputs"]
@@ -428,7 +428,7 @@ def capabilities() -> dict:
     speaking = TTS != "off" and settings["speak"]
     name = ("STT pt" + (f" · {TTS} {settings['voice']}" if speaking else ", respostas escritas")) if voice else None
     return {"voice": voice, "voice_name": name, "ptt": settings["ptt"].replace(" ", ""), "llm": _up(OLLAMA + "/api/tags"),
-            "voices": VOICES.get(TTS, []) if engine else [], "audio": voice_diagnostics, "actions": actions.availability(),
+            "voices": VOICES if engine and TTS != "off" else [], "audio": voice_diagnostics, "actions": actions.availability(),
             "vaults": actions.obsidian_vaults(), "vault": vault_info()}
 
 
@@ -494,7 +494,7 @@ def apply_voice_settings(prefs: dict) -> None:
             settings["failed"] = wanted
             voice_diagnostics["ptt_bound"] = bind_ptt(settings["ptt"])
     settings["speak"] = bool(prefs.get("speak", settings["speak"]))
-    if prefs.get("voice") in VOICES.get(TTS, []):
+    if prefs.get("voice") in VOICES:
         settings["voice"] = prefs["voice"]
     if prefs.get("language") in ("pt", "en"):
         settings["language"] = prefs["language"]
@@ -517,9 +517,9 @@ STT_HINT = "Olá PEACE. Adiciona uma reunião. Marca uma consulta. Lembra-me de 
 
 
 def transcribe(wav: Path) -> str:
-    """Speech to text on the GPU server; if it is down or out of memory, VoiceStudio's Whisper on the CPU (~3 s)."""
+    """Speech to text on the GPU server; if it is down or out of memory, the speech service's Whisper on the CPU (~3 s)."""
     body, kind = multipart({"model": "whisper-1", "language": "pt", "prompt": STT_HINT.replace("PEACE", settings.get("assistant_name", "PEACE"))}, "file", "fala.wav", wav.read_bytes())
-    engines = list(dict.fromkeys((STT_URL, VOICESTUDIO)))
+    engines = list(dict.fromkeys((STT_URL, VOICE_SERVICE)))
     for url in engines:
         request = urllib.request.Request(url + "/v1/audio/transcriptions", data=body, method="POST", headers={"Content-Type": kind})
         try:
@@ -528,9 +528,9 @@ def transcribe(wav: Path) -> str:
         except (urllib.error.URLError, OSError) as e:
             if url == engines[-1]:
                 raise
-            log.warning("speech recognition at %s failed (%s); trying VoiceStudio on the CPU", url, type(e).__name__)
+            log.warning("speech recognition at %s failed (%s); trying the speech service on the CPU", url, type(e).__name__)
             continue
-        voice_diagnostics["latency"]["stt_engine"] = "voicestudio" if url == VOICESTUDIO else "gpu"
+        voice_diagnostics["latency"]["stt_engine"] = "cpu" if url == VOICE_SERVICE else "gpu"
         return text
     return ""
 
@@ -586,26 +586,18 @@ def warm_model() -> None:
 
 
 def to_english(text: str) -> str | None:
-    """PEACE's replies are Portuguese; the speech engine sounds far better in English. None: speak Portuguese."""
-    body = {"model": settings["model"], "stream": False, "think": "low", "keep_alive": "30m",
-            "options": {"temperature": 0, "num_ctx": 8192, "use_mmap": False},  # the server's num_ctx: a different one reloads the model
-            "messages": [{"role": "system", "content": "Translate the user message from European Portuguese into natural "
-                                                      "spoken English. Reply with the translation only."},
-                         {"role": "user", "content": text.replace("«", "").replace("»", "")}]}
-    request = urllib.request.Request(OLLAMA + "/api/chat", method="POST", headers={"Content-Type": "application/json"},
-                                     data=json.dumps(body).encode())
+    """The server's model puts the reply in spoken English, cloud or local. None: speak Portuguese."""
     try:
-        with urllib.request.urlopen(request, timeout=20) as r:
-            return json.loads(r.read())["message"]["content"].strip() or None
-    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return (call("POST", "/api/v1/voice/english", {"text": text}) or {}).get("text") or None
+    except (urllib.error.URLError, OSError, ValueError):
         return None
 
 
 def speak(text: str, voice_name: str | None = None, output_device: str | None = None, language: str | None = None) -> None:
-    english = to_english(text) if (language or settings["language"]) == "en" and model_allowed() else None
+    english = to_english(text) if (language or settings["language"]) == "en" else None
     body = {"model": TTS, "input": english or for_speech(text), "voice": settings["voice"] if voice_name is None else voice_name,
             "language": "en" if english else "pt", "response_format": "wav"}
-    request = urllib.request.Request(VOICESTUDIO + "/v1/audio/speech", method="POST", headers={"Content-Type": "application/json"},
+    request = urllib.request.Request(VOICE_SERVICE + "/v1/audio/speech", method="POST", headers={"Content-Type": "application/json"},
                                      data=json.dumps(body).encode())
     audio = RUNTIME / "peace-reply.wav"
     try:
@@ -637,9 +629,34 @@ state_worker_lock = threading.Lock()
 state_worker = None
 
 
+VOICE_NOTICE = {"listening": "A ouvir-te…", "thinking": "A pensar…"}
+notice_id = ""
+
+
+def voice_notice(state: str) -> None:
+    """The shortcut works with no dashboard open, so the desktop itself says what is going on: one notification, replaced."""
+    global notice_id
+    if state not in VOICE_NOTICE and not notice_id:
+        return
+    try:
+        args = ["notify-send", "--app-name=PEACE", f"--icon={ICON}", "--hint=boolean:suppress-sound:true", "-p"]
+        args += ["-r", notice_id] if notice_id else []
+        # It stays until replaced; with nothing left to say, it goes at once.
+        args += ["-t", "180000", "--", assistant_title(), VOICE_NOTICE[state]] if state in VOICE_NOTICE else ["-t", "1", "--", " "]
+        out = subprocess.run(args, capture_output=True, text=True, timeout=2).stdout.strip()
+        notice_id = out if state in VOICE_NOTICE and out.isdigit() else ""
+    except (OSError, subprocess.SubprocessError):  # no notification service (or not Linux): the dashboard still shows it
+        notice_id = ""
+
+
+def assistant_title() -> str:
+    return settings.get("assistant_name", "PEACE")
+
+
 def _state_loop() -> None:
     while True:
         state = state_updates.get()
+        voice_notice(state)  # before the network, which may be slow
         try:
             call("POST", "/api/v1/assistant/state", {"state": state})
         except (urllib.error.URLError, OSError, ValueError):
@@ -801,7 +818,7 @@ class Voice:
         except Exception as e:  # any failure must reach the user, not vanish in a thread
             log.warning("voice turn failed: %s", type(e).__name__)
             voice_diagnostics["error"] = "Falha de captura, transcrição, servidor ou reprodução; usa os testes de Voz."
-            notify_reply("…", "A voz não está disponível agora (VoiceStudio ou o servidor não respondem).")
+            notify_reply("…", "A voz não está disponível agora (o serviço de fala ou o servidor não respondem).")
         finally:
             if RECORDING:
                 RECORDING.unlink(missing_ok=True)
@@ -930,7 +947,7 @@ def voice_test_loop(voice: Voice) -> None:
                     log.warning("voice test failed: %s", type(e).__name__)
                     call("POST", f"/api/v1/desktop/voice-test/{last}",
                          {"state": "error", "message": str(e) if isinstance(e, RuntimeError) else
-                          "Teste falhou. Verifica o dispositivo, PipeWire e VoiceStudio.", "level": 0})
+                          "Teste falhou. Verifica o dispositivo, PipeWire e o serviço de fala.", "level": 0})
         except (urllib.error.URLError, OSError, ValueError, KeyError):
             pass  # the main loop reports connectivity; diagnostics retry independently
         time.sleep(1)
